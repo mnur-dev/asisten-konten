@@ -27,7 +27,7 @@ def test_root_requires_admin_login(tmp_path, monkeypatch):
 def test_dashboard_creates_and_lists_job(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
     pgn = (Path(__file__).parents[1] / "samples/grischuk-wei.pgn").read_bytes()
-    created = c.post("/dashboard/jobs", headers=basic(), files={"pgn_file": ("game.pgn", pgn)}, follow_redirects=False)
+    created = c.post("/dashboard/jobs", headers=basic(), data={"video_url": "https://youtu.be/test123"}, files={"pgn_file": ("game.pgn", pgn)}, follow_redirects=False)
     assert created.status_code == 303
     jobs = c.get("/dashboard/jobs", headers=basic()).json()["jobs"]
     assert len(jobs) == 1
@@ -36,5 +36,12 @@ def test_dashboard_creates_and_lists_job(tmp_path, monkeypatch):
 
 def test_dashboard_rejects_text_without_moves(tmp_path, monkeypatch):
     c = client(tmp_path, monkeypatch)
-    response = c.post("/dashboard/jobs", headers=basic(), files={"pgn_file": ("bad.pgn", b"not a chess game")})
+    response = c.post("/dashboard/jobs", headers=basic(), data={"video_url": "https://youtu.be/test123"}, files={"pgn_file": ("bad.pgn", b"not a chess game")})
+    assert response.status_code == 400
+
+
+def test_dashboard_rejects_non_youtube_url(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    pgn = (Path(__file__).parents[1] / "samples/grischuk-wei.pgn").read_bytes()
+    response = c.post("/dashboard/jobs", headers=basic(), data={"video_url": "https://example.com/video"}, files={"pgn_file": ("game.pgn", pgn)})
     assert response.status_code == 400

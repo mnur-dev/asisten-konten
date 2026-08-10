@@ -33,11 +33,12 @@ def test_timestamps_validation():
 
 def test_dashboard_upload_and_worker_download_timestamps(tmp_path, monkeypatch):
     c, _ = client(tmp_path, monkeypatch); count = len(parse_pgn(PGN.decode())["moves"])
-    response = c.post("/dashboard/jobs", headers=admin(), files={"pgn_file": ("game.pgn", PGN), "timestamps_file": ("timestamps.json", timestamps(count))}, follow_redirects=False)
+    response = c.post("/dashboard/jobs", headers=admin(), data={"video_url": "https://www.youtube.com/watch?v=test123"}, files={"pgn_file": ("game.pgn", PGN), "timestamps_file": ("timestamps.json", timestamps(count))}, follow_redirects=False)
     assert response.status_code == 303
     job = c.get("/api/jobs/next", headers=worker()).json()["job"]
     claim = c.post(f'/api/jobs/{job["id"]}/claim', headers=worker(), json={"worker_id": "desktop-01"}).json()
     assert claim["timestamps_url"]
+    assert claim["video_url"] == "https://www.youtube.com/watch?v=test123"
     assert c.get(claim["timestamps_url"], headers=worker()).json()[0] == {"ply": 1, "timestamp": 1.0}
 
 

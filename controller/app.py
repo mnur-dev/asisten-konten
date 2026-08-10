@@ -5,6 +5,7 @@ from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from controller.dashboard import add_routes
+from shared.video_url import validate_video_url
 
 app = FastAPI(title="Chess Automation Controller")
 ROOT = Path(os.getenv("CHESS_STORAGE", Path(__file__).parents[1] / "storage"))
@@ -21,9 +22,9 @@ def auth(authorization):
 def db():
     connection = sqlite3.connect(DB)
     connection.row_factory = sqlite3.Row
-    connection.execute("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT,created_at TEXT,claimed_at TEXT,started_at TEXT,completed_at TEXT,worker_id TEXT,error_message TEXT,pgn_path TEXT,result_path TEXT,timestamps_path TEXT,lease_expires_at TEXT)")
+    connection.execute("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT,created_at TEXT,claimed_at TEXT,started_at TEXT,completed_at TEXT,worker_id TEXT,error_message TEXT,pgn_path TEXT,result_path TEXT,timestamps_path TEXT,lease_expires_at TEXT,video_url TEXT)")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-    for name in ("timestamps_path", "lease_expires_at"):
+    for name in ("timestamps_path", "lease_expires_at", "video_url"):
         if name not in columns: connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
     connection.commit()
     return connection
@@ -51,7 +52,7 @@ def health(): return {"status": "ok"}
 
 
 @app.post("/api/jobs", status_code=201)
-def create(pgn_file: UploadFile = File(...), timestamps_file: UploadFile | None = File(None), authorization: str | None = Header(None)):
+def create(pgn_file: UploadFile = File(...), timestamps_file: UploadFile | None = File(None), video_url: str | None = Form(None), authorization: str | None = Header(None)):
     auth(authorization)
     jid = uuid.uuid4().hex
     pgn_path = INPUTS / f"{jid}.pgn"; pgn_path.write_bytes(pgn_file.file.read())
@@ -59,7 +60,8 @@ def create(pgn_file: UploadFile = File(...), timestamps_file: UploadFile | None 
     if timestamps_file:
         timestamps_path = INPUTS / f"{jid}.timestamps.json"; timestamps_path.write_bytes(timestamps_file.file.read())
     connection = db()
-    connection.execute("INSERT INTO jobs(id,status,created_at,pgn_path,timestamps_path) VALUES(?,?,?,?,?)", (jid, "WAITING", now().isoformat(), str(pgn_path), str(timestamps_path) if timestamps_path else None))
+    video_url = validate_video_url(video_url) if video_url else None
+    connection.execute("INSERT INTO jobs(id,status,created_at,pgn_path,timestamps_path,video_url) VALUES(?,?,?,?,?,?)", (jid, "WAITING", now().isoformat(), str(pgn_path), str(timestamps_path) if timestamps_path else None, video_url))
     connection.commit()
     return {"id": jid, "status": "WAITING"}
 
@@ -78,8 +80,8 @@ def claim(jid: str, data: Claim, authorization: str | None = Header(None)):
     cursor = connection.execute("UPDATE jobs SET status='CLAIMED',claimed_at=?,worker_id=?,lease_expires_at=?,error_message=NULL WHERE id=? AND status='WAITING'", (now().isoformat(), data.worker_id, lease_time(), jid))
     connection.commit()
     if not cursor.rowcount: raise HTTPException(409, "Job unavailable")
-    job = connection.execute("SELECT timestamps_path FROM jobs WHERE id=?", (jid,)).fetchone()
-    return {"id": jid, "status": "CLAIMED", "pgn_url": f"/api/jobs/{jid}/input", "timestamps_url": f"/api/jobs/{jid}/timestamps" if job[0] else None}
+    job = connection.execute("SELECT timestamps_path,video_url FROM jobs WHERE id=?", (jid,)).fetchone()
+    return {"id": jid, "status": "CLAIMED", "pgn_url": f"/api/jobs/{jid}/input", "timestamps_url": f"/api/jobs/{jid}/timestamps" if job[0] else None, "video_url": job[1]}
 
 
 @app.get("/api/jobs/{jid}/input")
