@@ -4,6 +4,7 @@ import requests
 from renderer.render import render_video
 from shared.timeline import parse_pgn
 from shared.timestamps import parse_timestamps
+from worker.detect_timestamps import detect_timestamps
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 URL = os.environ["CONTROLLER_URL"].rstrip("/")
@@ -54,6 +55,15 @@ def run_once():
             payload = claim.json()
             pgn_path.write_bytes(request("GET", URL + payload["pgn_url"], headers=H, timeout=60).content)
             timeline = parse_pgn(pgn_path.read_text(encoding="utf-8")); timestamps = None
+            if payload.get("video_url") and not payload.get("timestamps_url"):
+                video = Path(directory) / "source.mp4"; detected = Path(directory) / "timestamps.json"
+                subprocess.run([os.getenv("YT_DLP", "yt-dlp"), "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", "-o", str(video), payload["video_url"]], check=True)
+                detect_timestamps(video, len(timeline["moves"]), detected)
+                request("POST", f"{URL}/api/jobs/{jid}/status", headers=H, json={"worker_id": WORKER, "status": "UPLOADING"}, timeout=30)
+                with detected.open("rb") as file:
+                    request("POST", f"{URL}/api/jobs/{jid}/timestamps-result", headers=H, data={"worker_id": WORKER}, files={"timestamps_file": ("timestamps.json", file, "application/json")}, timeout=60)
+                logging.info("Job %s COMPLETED | timestamps detected", jid)
+                return True
             if payload.get("timestamps_url"):
                 data = request("GET", URL + payload["timestamps_url"], headers=H, timeout=60).content
                 timestamps = parse_timestamps(data, len(timeline["moves"]))

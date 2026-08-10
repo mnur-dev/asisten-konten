@@ -22,9 +22,9 @@ def auth(authorization):
 def db():
     connection = sqlite3.connect(DB)
     connection.row_factory = sqlite3.Row
-    connection.execute("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT,created_at TEXT,claimed_at TEXT,started_at TEXT,completed_at TEXT,worker_id TEXT,error_message TEXT,pgn_path TEXT,result_path TEXT,timestamps_path TEXT,lease_expires_at TEXT,video_url TEXT)")
+    connection.execute("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT,created_at TEXT,claimed_at TEXT,started_at TEXT,completed_at TEXT,worker_id TEXT,error_message TEXT,pgn_path TEXT,result_path TEXT,timestamps_path TEXT,lease_expires_at TEXT,video_url TEXT,detected_timestamps_path TEXT)")
     columns = {row[1] for row in connection.execute("PRAGMA table_info(jobs)")}
-    for name in ("timestamps_path", "lease_expires_at", "video_url"):
+    for name in ("timestamps_path", "lease_expires_at", "video_url", "detected_timestamps_path"):
         if name not in columns: connection.execute(f"ALTER TABLE jobs ADD COLUMN {name} TEXT")
     connection.commit()
     return connection
@@ -124,3 +124,13 @@ def result(jid: str, worker_id: str = Form(...), result_file: UploadFile = File(
     temporary.write_bytes(result_file.file.read()); temporary.replace(path)
     connection.execute("UPDATE jobs SET status='COMPLETED',completed_at=?,result_path=?,lease_expires_at=NULL WHERE id=?", (now().isoformat(), str(path), jid)); connection.commit()
     return {"id": jid, "status": "COMPLETED", "result": str(path)}
+
+
+@app.post("/api/jobs/{jid}/timestamps-result")
+def timestamps_result(jid: str, worker_id: str = Form(...), timestamps_file: UploadFile = File(...), authorization: str | None = Header(None)):
+    auth(authorization); connection = db(); owned_job(connection, jid, worker_id, ("UPLOADING",))
+    path = RESULTS / f"{jid}.timestamps.json"; data = timestamps_file.file.read(200_001)
+    if len(data) > 200_000: raise HTTPException(413, "timestamps.json maximum 200 KB")
+    path.write_bytes(data)
+    connection.execute("UPDATE jobs SET status='COMPLETED',completed_at=?,detected_timestamps_path=?,lease_expires_at=NULL WHERE id=?", (now().isoformat(), str(path), jid)); connection.commit()
+    return {"id": jid, "status": "COMPLETED"}
