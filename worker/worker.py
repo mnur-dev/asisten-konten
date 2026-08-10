@@ -1,4 +1,4 @@
-import logging, os, shutil, socket, subprocess, tempfile, threading, time
+import logging, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 import requests
 from renderer.render import render_video
@@ -30,6 +30,10 @@ def nvenc_capability():
     return result.returncode == 0, result.stderr.decode(errors="replace").strip()
 
 
+def yt_dlp_command(url, output):
+    return [sys.executable, "-m", "yt_dlp", "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", "-o", str(output), url]
+
+
 def get_next_job():
     response = requests.get(URL + "/api/jobs/next", headers=H, timeout=30)
     if response.status_code == 401: raise RuntimeError("Controller authentication failed: check WORKER_TOKEN")
@@ -57,7 +61,7 @@ def run_once():
             timeline = parse_pgn(pgn_path.read_text(encoding="utf-8")); timestamps = None
             if payload.get("video_url") and not payload.get("timestamps_url"):
                 video = Path(directory) / "source.mp4"; detected = Path(directory) / "timestamps.json"
-                subprocess.run([os.getenv("YT_DLP", "yt-dlp"), "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", "-o", str(video), payload["video_url"]], check=True)
+                subprocess.run(yt_dlp_command(payload["video_url"], video), check=True)
                 detect_timestamps(video, len(timeline["moves"]), detected)
                 request("POST", f"{URL}/api/jobs/{jid}/status", headers=H, json={"worker_id": WORKER, "status": "UPLOADING"}, timeout=30)
                 with detected.open("rb") as file:
