@@ -53,7 +53,7 @@ def render_frame(timeline, ply, output, size=(1920,1080), orientation="white"):
     output=Path(output); output.parent.mkdir(parents=True,exist_ok=True)
     _image(timeline,ply,size,orientation).save(output,"PNG")
 
-def render_video(timeline, output, size=(1920,1080), fps=30, seconds_per_ply=1.0, max_plies=None, encoder=None):
+def render_video(timeline, output, size=(1920,1080), fps=30, seconds_per_ply=1.0, max_plies=None, encoder=None, timestamps=None):
     if not shutil.which("ffmpeg"): raise RuntimeError("FFmpeg not installed")
     if encoder is None:
         probe = subprocess.run(
@@ -64,11 +64,16 @@ def render_video(timeline, output, size=(1920,1080), fps=30, seconds_per_ply=1.0
     count=min(len(timeline["moves"]),max_plies or len(timeline["moves"]))
     cmd=["ffmpeg","-y","-loglevel","error","-f","rawvideo","-pix_fmt","rgb24","-s",f"{size[0]}x{size[1]}","-r",str(fps),"-i","-","-an","-c:v",encoder,"-pix_fmt","yuv420p",str(output)]
     proc=subprocess.Popen(cmd,stdin=subprocess.PIPE,stderr=subprocess.PIPE)
-    frames=max(1,round(fps*seconds_per_ply))
+    if timestamps:
+        visible = [(0, timestamps[0]["timestamp"])]
+        visible += [(ply, timestamps[ply]["timestamp"] - timestamps[ply - 1]["timestamp"]) for ply in range(1, count)]
+        visible.append((count, seconds_per_ply))
+    else:
+        visible = [(ply, seconds_per_ply) for ply in range(1, count + 1)]
     try:
-        for ply in range(1,count+1):
+        for ply, duration in visible:
             data=_image(timeline,ply,size).tobytes()
-            for _ in range(frames): proc.stdin.write(data)
+            for _ in range(max(0, round(fps * duration))): proc.stdin.write(data)
         proc.stdin.close(); error=proc.stderr.read().decode(); code=proc.wait()
     except Exception:
         proc.kill(); raise

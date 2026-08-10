@@ -4,5 +4,6 @@ __pycache__/
 *.pyc
 storage/inputs/*
 storage/results/*
+storage/jobs.db
 !storage/inputs/.gitkeep
 !storage/results/.gitkeep

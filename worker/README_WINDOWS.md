@@ -22,6 +22,7 @@ $env:CONTROLLER_URL="https://YOUR-CONTROLLER-DOMAIN"
 $env:WORKER_TOKEN="SAME-LONG-TOKEN-AS-VPS"
 $env:WORKER_ID="desktop-01"
 $env:POLL_SECONDS="10"
+$env:HEARTBEAT_SECONDS="30"
 ```
 Use HTTPS in production. Never commit token. `.env` remains ignored; current MVP reads process environment directly.
 
@@ -29,4 +30,4 @@ Use HTTPS in production. Never commit token. `.env` remains ignored; current MVP
 ```powershell
 .\.venv\Scripts\python.exe -m worker.worker
 ```
-Expected startup includes worker ID, FFmpeg status, and NVENC status. PC may stop anytime; WAITING jobs stay on VPS.
+Expected startup includes worker ID, FFmpeg status, and NVENC status. If PC stops mid-render, controller requeues job after lease expires.

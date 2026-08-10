@@ -12,4 +12,6 @@ def test_job_lifecycle(tmp_path, monkeypatch):
     job=client.get("/api/jobs/next",headers={"Authorization":"Bearer test-token"}).json()["job"]; assert job["status"]=="WAITING"
     claimed=client.post(f"/api/jobs/{job['id']}/claim",headers={"Authorization":"Bearer test-token"},json={"worker_id":"desktop-01"}); assert claimed.status_code==200
     download=client.get(claimed.json()["pgn_url"],headers={"Authorization":"Bearer test-token"}); assert download.content==pgn
-    result=client.post(f"/api/jobs/{job['id']}/result",headers={"Authorization":"Bearer test-token"},files={"result_file":("game.mp4",b"video")}); assert result.json()["status"]=="COMPLETED"
+    processing=client.post(f"/api/jobs/{job['id']}/status",headers={"Authorization":"Bearer test-token"},json={"worker_id":"desktop-01","status":"PROCESSING"}); assert processing.status_code==200
+    uploading=client.post(f"/api/jobs/{job['id']}/status",headers={"Authorization":"Bearer test-token"},json={"worker_id":"desktop-01","status":"UPLOADING"}); assert uploading.status_code==200
+    result=client.post(f"/api/jobs/{job['id']}/result",headers={"Authorization":"Bearer test-token"},data={"worker_id":"desktop-01"},files={"result_file":("game.mp4",b"video")}); assert result.json()["status"]=="COMPLETED"
