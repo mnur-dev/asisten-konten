@@ -5,7 +5,16 @@ from renderer.render import render_video
 from shared.timeline import parse_pgn
 logging.basicConfig(level=logging.INFO,format="[%(asctime)s] %(message)s",datefmt="%H:%M:%S")
 URL=os.environ["CONTROLLER_URL"].rstrip("/"); TOKEN=os.environ["WORKER_TOKEN"]; WORKER=os.getenv("WORKER_ID",socket.gethostname()); H={"Authorization":f"Bearer {TOKEN}"}
-def nvenc(): return bool(shutil.which("ffmpeg") and subprocess.run(["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=size=64x64:rate=1","-frames:v","1","-c:v","h264_nvenc","-f","null","-"],capture_output=True).returncode==0)
+def nvenc_capability():
+    if not shutil.which("ffmpeg"):
+        return False, "FFmpeg not found in PATH"
+    result = subprocess.run(
+        ["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=size=64x64:rate=1","-frames:v","1","-c:v","h264_nvenc","-f","null","-"],
+        capture_output=True,
+    )
+    reason = result.stderr.decode(errors="replace").strip()
+    return result.returncode == 0, reason
+
 def get_next_job():
     response = requests.get(URL+"/api/jobs/next",headers=H,timeout=30)
     if response.status_code == 401:
@@ -27,7 +36,10 @@ def run_once():
         requests.post(f"{URL}/api/jobs/{jid}/status",headers=H,json={"status":"FAILED","error_message":str(e)[:1000]},timeout=30); logging.exception("Job failed")
     return True
 def main():
-    logging.info("Chess Render Worker | ID=%s | FFmpeg=%s | NVENC=%s",WORKER,bool(shutil.which("ffmpeg")),nvenc())
+    available, reason = nvenc_capability()
+    logging.info("Chess Render Worker | ID=%s | FFmpeg=%s | NVENC=%s",WORKER,bool(shutil.which("ffmpeg")),available)
+    if not available:
+        logging.warning("NVENC check failed: %s", reason or "unknown FFmpeg error")
     while True:
         try:
             if not run_once(): time.sleep(int(os.getenv("POLL_SECONDS","10")))
