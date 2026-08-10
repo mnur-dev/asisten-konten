@@ -57,7 +57,7 @@ def render_video(timeline, output, size=(1920,1080), fps=30, seconds_per_ply=1.0
     if not shutil.which("ffmpeg"): raise RuntimeError("FFmpeg not installed")
     if encoder is None:
         probe = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=64x64:rate=1", "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=size=640x360:rate=1", "-frames:v", "1", "-c:v", "h264_nvenc", "-f", "null", "-"],
             capture_output=True,
         )
         encoder = "h264_nvenc" if probe.returncode == 0 else "libx264"

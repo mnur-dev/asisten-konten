@@ -20,8 +20,10 @@ def test_nvenc_failure_returns_ffmpeg_reason(monkeypatch):
     class Result:
         returncode = 1
         stderr = b"Cannot load nvcuda.dll"
+    command = []
     monkeypatch.setattr("worker.worker.shutil.which", lambda _: "ffmpeg")
-    monkeypatch.setattr("worker.worker.subprocess.run", lambda *a, **k: Result())
+    monkeypatch.setattr("worker.worker.subprocess.run", lambda args, **kwargs: command.extend(args) or Result())
     available, reason = nvenc_capability()
     assert available is False
     assert reason == "Cannot load nvcuda.dll"
+    assert "color=size=640x360:rate=1" in command

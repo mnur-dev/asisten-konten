@@ -9,7 +9,7 @@ def nvenc_capability():
     if not shutil.which("ffmpeg"):
         return False, "FFmpeg not found in PATH"
     result = subprocess.run(
-        ["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=size=64x64:rate=1","-frames:v","1","-c:v","h264_nvenc","-f","null","-"],
+        ["ffmpeg","-hide_banner","-loglevel","error","-f","lavfi","-i","color=size=640x360:rate=1","-frames:v","1","-c:v","h264_nvenc","-f","null","-"],
         capture_output=True,
     )
     reason = result.stderr.decode(errors="replace").strip()
