@@ -16,6 +16,9 @@ def db():
 def row(j): return dict(j) if j else None
 class Claim(BaseModel): worker_id:str
 class Status(BaseModel): status:str; error_message:str|None=None
+@app.get("/health")
+def health():
+    return {"status": "ok"}
 @app.post("/api/jobs",status_code=201)
 def create(pgn_file:UploadFile=File(...),authorization:str|None=Header(None)):
     auth(authorization); jid=uuid.uuid4().hex; path=INPUTS/f"{jid}.pgn"; path.write_bytes(pgn_file.file.read()); now=datetime.now(timezone.utc).isoformat(); c=db(); c.execute("INSERT INTO jobs(id,status,created_at,pgn_path) VALUES(?,?,?,?)",(jid,"WAITING",now,str(path))); c.commit(); return {"id":jid,"status":"WAITING"}
