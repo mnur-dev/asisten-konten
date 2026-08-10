@@ -5,7 +5,19 @@ import chess
 from PIL import Image, ImageDraw, ImageFont
 
 PIECES = {"P":"♙","N":"♘","B":"♗","R":"♖","Q":"♕","K":"♔","p":"♟","n":"♞","b":"♝","r":"♜","q":"♛","k":"♚"}
-FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+
+def find_chess_font():
+    candidates = []
+    if windir := __import__("os").environ.get("WINDIR"):
+        candidates.append(Path(windir) / "Fonts" / "seguisym.ttf")
+    candidates.extend((
+        Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+        Path("/System/Library/Fonts/Apple Symbols.ttf"),
+    ))
+    for font in candidates:
+        if font.is_file():
+            return font
+    raise RuntimeError("Chess Unicode font not found")
 
 def _image(timeline, ply, size, orientation="white"):
     width, height = size
@@ -21,7 +33,7 @@ def _image(timeline, ply, size, orientation="white"):
         last = chess.Move.from_uci(item["uci"]); board.push(last)
     ranks = range(7,-1,-1) if orientation == "white" else range(8)
     files = range(8) if orientation == "white" else range(7,-1,-1)
-    font = ImageFont.truetype(FONT, max(14, int(square * .72)))
+    font = ImageFont.truetype(find_chess_font(), max(14, int(square * .72)))
     for row, rank in enumerate(ranks):
         for col, file in enumerate(files):
             sq = chess.square(file, rank)

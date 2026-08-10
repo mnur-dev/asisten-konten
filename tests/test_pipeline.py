@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from PIL import Image
 from shared.timeline import parse_pgn
-from renderer.render import render_frame, render_video
+from renderer.render import find_chess_font, render_frame, render_video
 
 ROOT = Path(__file__).parents[1]
 PGN = ROOT / "samples/grischuk-wei.pgn"
@@ -20,6 +20,13 @@ def test_frame_is_png_with_requested_size(tmp_path):
     with Image.open(output) as image:
         assert image.format == "PNG"
         assert image.size == (640, 360)
+
+def test_windows_chess_font_is_discovered(tmp_path, monkeypatch):
+    font = tmp_path / "Fonts" / "seguisym.ttf"
+    font.parent.mkdir()
+    font.touch()
+    monkeypatch.setenv("WINDIR", str(tmp_path))
+    assert find_chess_font() == font
 
 def test_short_video_is_created(tmp_path):
     timeline = parse_pgn(PGN.read_text(encoding="utf-8"))
