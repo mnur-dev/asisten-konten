@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
+from controller.dashboard import add_routes
 
 app=FastAPI(title="Chess Automation Controller")
 ROOT=Path(os.getenv("CHESS_STORAGE",Path(__file__).parents[1]/"storage")); INPUTS=ROOT/"inputs"; RESULTS=ROOT/"results"; DB=ROOT/"jobs.db"
@@ -14,6 +15,7 @@ def auth(authorization):
 def db():
     c=sqlite3.connect(DB); c.row_factory=sqlite3.Row; c.execute("CREATE TABLE IF NOT EXISTS jobs(id TEXT PRIMARY KEY,status TEXT,created_at TEXT,claimed_at TEXT,started_at TEXT,completed_at TEXT,worker_id TEXT,error_message TEXT,pgn_path TEXT,result_path TEXT)"); return c
 def row(j): return dict(j) if j else None
+add_routes(app, db, INPUTS, RESULTS)
 class Claim(BaseModel): worker_id:str
 class Status(BaseModel): status:str; error_message:str|None=None
 @app.get("/health")
