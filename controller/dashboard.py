@@ -35,7 +35,10 @@ def add_routes(app, db, inputs, results):
     def create_job(pgn_file: UploadFile, authorization: str | None = Header(None)):
         admin_auth(authorization); data = pgn_file.file.read(2_000_001)
         if len(data) > 2_000_000: raise HTTPException(413, "PGN maximum 2 MB")
-        try: parse_pgn(data.decode("utf-8"))
+        try:
+            timeline = parse_pgn(data.decode("utf-8"))
+            if not timeline["moves"]:
+                raise ValueError("PGN has no moves")
         except Exception as error: raise HTTPException(400, f"Invalid PGN: {error}")
         jid=uuid.uuid4().hex; path=inputs/f"{jid}.pgn"; path.write_bytes(data); c=db(); c.execute("INSERT INTO jobs(id,status,created_at,pgn_path) VALUES(?,?,?,?)",(jid,"WAITING",datetime.now(timezone.utc).isoformat(),str(path))); c.commit()
         return RedirectResponse("/", status_code=303)

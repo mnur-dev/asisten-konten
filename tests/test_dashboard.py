@@ -32,3 +32,9 @@ def test_dashboard_creates_and_lists_job(tmp_path, monkeypatch):
     jobs = c.get("/dashboard/jobs", headers=basic()).json()["jobs"]
     assert len(jobs) == 1
     assert jobs[0]["status"] == "WAITING"
+
+
+def test_dashboard_rejects_text_without_moves(tmp_path, monkeypatch):
+    c = client(tmp_path, monkeypatch)
+    response = c.post("/dashboard/jobs", headers=basic(), files={"pgn_file": ("bad.pgn", b"not a chess game")})
+    assert response.status_code == 400
