@@ -55,7 +55,8 @@ def analyze_sheet(start: float = Form(...), end: float = Form(...), moves: str =
     with tempfile.TemporaryDirectory() as directory:
         sheet = Path(directory) / "sheet.jpg"; sheet.write_bytes(sheet_file.file.read())
         prompt = PROMPT.format(moves=moves, start=start, end=end)
-        result = subprocess.run(["hermes", "-p", "asisten-konten", "chat", "-Q", "--source", "tool", "-t", "vision", "--image", str(sheet), "-q", prompt], capture_output=True, text=True, timeout=300)
+        hermes = os.getenv("HERMES_BIN", "/home/ubuntu/.hermes/hermes-agent/venv/bin/hermes")
+        result = subprocess.run([hermes, "-p", "asisten-konten", "chat", "-Q", "--source", "tool", "-t", "vision", "--image", str(sheet), "-q", prompt], capture_output=True, text=True, timeout=300)
         if result.returncode: raise HTTPException(502, (result.stderr or "Hermes vision failed")[-1000:])
         return {"detections": parse_json(result.stdout)}
 
