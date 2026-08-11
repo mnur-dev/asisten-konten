@@ -43,8 +43,11 @@ def analyze_sheets_parallel(sheets, moves, analyze, workers=6):
         for future in as_completed(futures):
             results.extend(future.result()); done += 1
             logging.info("Vision progress %d/%d sheets", done, len(sheets))
+    valid = [item for item in results if isinstance(item, dict) and "timestamp" in item]
+    dropped = len(results) - len(valid)
+    if dropped: logging.warning("Ignored %d malformed vision detections", dropped)
     ordered = []
-    for item in sorted(results, key=lambda value: float(value["timestamp"])):
+    for item in sorted(valid, key=lambda value: float(value["timestamp"])):
         timestamp = float(item["timestamp"])
         if not ordered or timestamp - ordered[-1]["timestamp"] >= .5:
             ordered.append({"timestamp": timestamp, "confidence": float(item.get("confidence", .5))})

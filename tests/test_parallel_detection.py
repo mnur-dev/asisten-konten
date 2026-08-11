@@ -26,3 +26,10 @@ def test_deduplicates_boundary_timestamp(tmp_path):
     sheets = [(0, 10, tmp_path / "a"), (10, 20, tmp_path / "b")]
     def analyze(start, end, sheet, moves): return [{"timestamp": 10, "confidence": .8}]
     assert len(analyze_sheets_parallel(sheets, [], analyze, workers=2)) == 1
+
+
+def test_ignores_malformed_model_items(tmp_path):
+    sheets = [(0, 10, tmp_path / "a")]
+    def analyze(start, end, sheet, moves):
+        return [{"timestamp": 8.5}, {"start": 9.0}, "bad", {}]
+    assert analyze_sheets_parallel(sheets, [], analyze, workers=1) == [{"timestamp": 8.5, "confidence": .5}]
