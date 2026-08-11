@@ -1,4 +1,5 @@
 import json, logging, os, shutil, socket, subprocess, sys, tempfile, threading, time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 import requests
 from renderer.render import render_video
@@ -34,18 +35,36 @@ def yt_dlp_command(url, output):
     return [sys.executable, "-m", "yt_dlp", "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", "-o", str(output), url]
 
 
+def analyze_sheets_parallel(sheets, moves, analyze, workers=6):
+    results = []
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(analyze, start, end, sheet, " ".join(moves)): start for start, end, sheet in sheets}
+        done = 0
+        for future in as_completed(futures):
+            results.extend(future.result()); done += 1
+            logging.info("Vision progress %d/%d sheets", done, len(sheets))
+    ordered = []
+    for item in sorted(results, key=lambda value: float(value["timestamp"])):
+        timestamp = float(item["timestamp"])
+        if not ordered or timestamp - ordered[-1]["timestamp"] >= .5:
+            ordered.append({"timestamp": timestamp, "confidence": float(item.get("confidence", .5))})
+    return ordered
+
+
 def detect_via_controller(video, timeline, output, directory):
     duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(video)], capture_output=True, text=True, check=True).stdout)
-    found = []
+    sheets = []
     for start in range(0, int(duration + 9), 10):
-        sheet = Path(directory) / f"sheet-{start:05d}.jpg"; contact_sheet(video, sheet, start, min(10, duration-start))
-        moves = " ".join(item["san"] for item in timeline["moves"][len(found):len(found)+20])
+        sheet = Path(directory) / f"sheet-{start:05d}.jpg"; end = min(duration, start+10)
+        contact_sheet(video, sheet, start, end-start); sheets.append((start, end, sheet))
+    logging.info("Created %d contact sheets; analyzing with %d parallel calls", len(sheets), int(os.getenv("VISION_WORKERS", "6")))
+    def analyze(start, end, sheet, moves):
         with sheet.open("rb") as file:
-            response = request("POST", URL+"/api/vision/analyze-sheet", headers=H, data={"start":start,"end":min(duration,start+10),"moves":moves}, files={"sheet_file":("sheet.jpg",file,"image/jpeg")}, timeout=360)
-        for item in response.json()["detections"]:
-            timestamp = float(item["timestamp"])
-            if start <= timestamp <= min(duration,start+10) and (not found or timestamp-found[-1]["timestamp"] >= .5): found.append({"ply":len(found)+1,"timestamp":timestamp,"confidence":float(item.get("confidence",.5))})
+            return request("POST", URL+"/api/vision/analyze-sheet", headers=H, data={"start":start,"end":end,"moves":moves}, files={"sheet_file":("sheet.jpg",file,"image/jpeg")}, timeout=360).json()["detections"]
+    moves = [item["san"] for item in timeline["moves"]]
+    found = analyze_sheets_parallel(sheets, moves, analyze, int(os.getenv("VISION_WORKERS", "6")))
     if len(found) != len(timeline["moves"]): raise RuntimeError(f"AI detected {len(found)} moves for {len(timeline['moves'])} PGN plies")
+    for ply, item in enumerate(found, 1): item["ply"] = ply
     Path(output).write_text(json.dumps(found,indent=2)+"\n",encoding="utf-8")
 
 
