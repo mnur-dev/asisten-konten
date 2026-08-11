@@ -3,7 +3,11 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from shared.timeline import parse_pgn
 
-PROMPT = '''Analyze ONLY physical chessboard in this contact sheet. Frame labels are absolute source-video seconds at 0.25-second intervals. Ignore digital-board overlay. Return ONLY valid JSON array, no markdown: [{"timestamp":8.75,"confidence":0.9}]. Timestamp means moved piece has been released and physical position first becomes stable. Count each physical move once. Exclude handshake, clock press, repeated stable frames, and non-move gestures. PGN move order starts: {moves}. This sheet covers {start:.2f}–{end:.2f}s.'''
+PROMPT = '''Analyze ONLY physical chessboard in this contact sheet. Frame labels are absolute source-video seconds at 0.25-second intervals. Ignore digital-board overlay. Return ONLY valid JSON array, no markdown: [{{"timestamp":8.75,"confidence":0.9}}]. Timestamp means moved piece has been released and physical position first becomes stable. Count each physical move once. Exclude handshake, clock press, repeated stable frames, and non-move gestures. PGN move order starts: {moves}. This sheet covers {start:.2f}–{end:.2f}s.'''
+
+
+def format_prompt(moves, start, end):
+    return PROMPT.format(moves=moves, start=start, end=end)
 
 
 def parse_json(text):
@@ -41,7 +45,7 @@ def detect_with_hermes(video, pgn, output, hermes="hermes", segment_seconds=10):
     with tempfile.TemporaryDirectory() as directory:
         for start in range(0, int(duration + segment_seconds - 1), segment_seconds):
             sheet = Path(directory) / f"sheet-{start:05d}.jpg"; contact_sheet(video, sheet, start, min(segment_seconds, duration-start))
-            prompt = PROMPT.format(moves=moves[len(found):len(found)+20], start=start, end=min(duration, start+segment_seconds))
+            prompt = format_prompt(moves[len(found):len(found)+20], start, min(duration, start+segment_seconds))
             for item in analyze_sheet(sheet, prompt, hermes):
                 timestamp = float(item["timestamp"])
                 if start <= timestamp <= min(duration, start+segment_seconds) and (not found or timestamp-found[-1]["timestamp"] >= .5):

@@ -7,7 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from controller.dashboard import add_routes
 from shared.video_url import validate_video_url
-from worker.ai_timestamp_detector import PROMPT, parse_json
+from worker.ai_timestamp_detector import format_prompt, parse_json
 
 app = FastAPI(title="Chess Automation Controller")
 ROOT = Path(os.getenv("CHESS_STORAGE", Path(__file__).parents[1] / "storage"))
@@ -54,7 +54,7 @@ def analyze_sheet(start: float = Form(...), end: float = Form(...), moves: str =
     auth(authorization)
     with tempfile.TemporaryDirectory() as directory:
         sheet = Path(directory) / "sheet.jpg"; sheet.write_bytes(sheet_file.file.read())
-        prompt = PROMPT.format(moves=moves, start=start, end=end)
+        prompt = format_prompt(moves, start, end)
         hermes = os.getenv("HERMES_BIN", "/home/ubuntu/.hermes/hermes-agent/venv/bin/hermes")
         result = subprocess.run([hermes, "-p", "asisten-konten", "chat", "-Q", "--source", "tool", "-t", "vision", "--image", str(sheet), "-q", prompt], capture_output=True, text=True, timeout=300)
         if result.returncode: raise HTTPException(502, (result.stderr or "Hermes vision failed")[-1000:])

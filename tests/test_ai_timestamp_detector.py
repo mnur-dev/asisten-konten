@@ -1,5 +1,5 @@
-import json
-from worker.ai_timestamp_detector import parse_json
+import pytest
+from worker.ai_timestamp_detector import format_prompt, parse_json
 
 
 def test_parse_json_ignores_hermes_session_footer():
@@ -8,6 +8,11 @@ def test_parse_json_ignores_hermes_session_footer():
 
 
 def test_parse_json_rejects_missing_array():
-    try: parse_json("model failed")
-    except RuntimeError as error: assert "no JSON" in str(error)
-    else: raise AssertionError("missing JSON accepted")
+    with pytest.raises(RuntimeError, match="no JSON"):
+        parse_json("model failed")
+
+
+def test_prompt_formats_literal_json_example():
+    prompt = format_prompt("b3 c5", 0, 10)
+    assert '{"timestamp":8.75,"confidence":0.9}' in prompt
+    assert "0.00–10.00s" in prompt
