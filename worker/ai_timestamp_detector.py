@@ -1,5 +1,6 @@
 import json, subprocess, tempfile
 from pathlib import Path
+from PIL import Image, ImageDraw, ImageFont
 from shared.timeline import parse_pgn
 
 PROMPT = '''Analyze ONLY physical chessboard in this contact sheet. Frame labels are absolute source-video seconds at 0.25-second intervals. Ignore digital-board overlay. Return ONLY valid JSON array, no markdown: [{"timestamp":8.75,"confidence":0.9}]. Timestamp means moved piece has been released and physical position first becomes stable. Count each physical move once. Exclude handshake, clock press, repeated stable frames, and non-move gestures. PGN move order starts: {moves}. This sheet covers {start:.2f}–{end:.2f}s.'''
@@ -12,7 +13,19 @@ def parse_json(text):
 
 
 def contact_sheet(video, output, start, seconds=10):
-    subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(start), "-i", str(video), "-t", str(seconds), "-vf", f"fps=4,scale=320:180,drawtext=text='%{{pts\\:hms}}':x=4:y=4:fontsize=16:fontcolor=white:box=1:boxcolor=black@0.8,tile=5x8", "-frames:v", "1", str(output)], check=True)
+    output = Path(output)
+    with tempfile.TemporaryDirectory() as directory:
+        pattern = str(Path(directory) / "%04d.jpg")
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(start), "-i", str(video), "-t", str(seconds), "-vf", "fps=4,scale=320:180", pattern], check=True)
+        frames = sorted(Path(directory).glob("*.jpg"))
+        if not frames: raise RuntimeError("FFmpeg created no contact-sheet frames")
+        sheet = Image.new("RGB", (1600, 1440), "black")
+        font = ImageFont.load_default()
+        for index, frame in enumerate(frames[:40]):
+            image = Image.open(frame).convert("RGB"); draw = ImageDraw.Draw(image)
+            label = f"{start + index / 4:.2f}s"; draw.rectangle((0, 0, 76, 18), fill="black"); draw.text((3, 3), label, fill="white", font=font)
+            sheet.paste(image, ((index % 5) * 320, (index // 5) * 180))
+        sheet.save(output, "JPEG", quality=90)
 
 
 def analyze_sheet(sheet, prompt, hermes="hermes"):
