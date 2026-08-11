@@ -1,10 +1,10 @@
-import logging, os, shutil, socket, subprocess, sys, tempfile, threading, time
+import json, logging, os, shutil, socket, subprocess, sys, tempfile, threading, time
 from pathlib import Path
 import requests
 from renderer.render import render_video
 from shared.timeline import parse_pgn
 from shared.timestamps import parse_timestamps
-from worker.detect_timestamps import detect_timestamps
+from worker.ai_timestamp_detector import contact_sheet
 
 logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(message)s", datefmt="%H:%M:%S")
 URL = os.environ["CONTROLLER_URL"].rstrip("/")
@@ -32,6 +32,21 @@ def nvenc_capability():
 
 def yt_dlp_command(url, output):
     return [sys.executable, "-m", "yt_dlp", "-f", "bv*[height<=720]+ba/b[height<=720]", "--merge-output-format", "mp4", "-o", str(output), url]
+
+
+def detect_via_controller(video, timeline, output, directory):
+    duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(video)], capture_output=True, text=True, check=True).stdout)
+    found = []
+    for start in range(0, int(duration + 9), 10):
+        sheet = Path(directory) / f"sheet-{start:05d}.jpg"; contact_sheet(video, sheet, start, min(10, duration-start))
+        moves = " ".join(item["san"] for item in timeline["moves"][len(found):len(found)+20])
+        with sheet.open("rb") as file:
+            response = request("POST", URL+"/api/vision/analyze-sheet", headers=H, data={"start":start,"end":min(duration,start+10),"moves":moves}, files={"sheet_file":("sheet.jpg",file,"image/jpeg")}, timeout=360)
+        for item in response.json()["detections"]:
+            timestamp = float(item["timestamp"])
+            if start <= timestamp <= min(duration,start+10) and (not found or timestamp-found[-1]["timestamp"] >= .5): found.append({"ply":len(found)+1,"timestamp":timestamp,"confidence":float(item.get("confidence",.5))})
+    if len(found) != len(timeline["moves"]): raise RuntimeError(f"AI detected {len(found)} moves for {len(timeline['moves'])} PGN plies")
+    Path(output).write_text(json.dumps(found,indent=2)+"\n",encoding="utf-8")
 
 
 def get_next_job():
@@ -62,7 +77,7 @@ def run_once():
             if payload.get("video_url") and not payload.get("timestamps_url"):
                 video = Path(directory) / "source.mp4"; detected = Path(directory) / "timestamps.json"
                 subprocess.run(yt_dlp_command(payload["video_url"], video), check=True)
-                detect_timestamps(video, len(timeline["moves"]), detected)
+                detect_via_controller(video, timeline, detected, directory)
                 request("POST", f"{URL}/api/jobs/{jid}/status", headers=H, json={"worker_id": WORKER, "status": "UPLOADING"}, timeout=30)
                 with detected.open("rb") as file:
                     request("POST", f"{URL}/api/jobs/{jid}/timestamps-result", headers=H, data={"worker_id": WORKER}, files={"timestamps_file": ("timestamps.json", file, "application/json")}, timeout=60)

@@ -1,4 +1,5 @@
 import os, sqlite3, uuid
+import subprocess, tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form
@@ -6,6 +7,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from controller.dashboard import add_routes
 from shared.video_url import validate_video_url
+from worker.ai_timestamp_detector import PROMPT, parse_json
 
 app = FastAPI(title="Chess Automation Controller")
 ROOT = Path(os.getenv("CHESS_STORAGE", Path(__file__).parents[1] / "storage"))
@@ -45,6 +47,17 @@ add_routes(app, db, INPUTS, RESULTS)
 class Claim(BaseModel): worker_id: str
 class WorkerAction(BaseModel): worker_id: str
 class Status(WorkerAction): status: str; error_message: str | None = None
+
+
+@app.post("/api/vision/analyze-sheet")
+def analyze_sheet(start: float = Form(...), end: float = Form(...), moves: str = Form(""), sheet_file: UploadFile = File(...), authorization: str | None = Header(None)):
+    auth(authorization)
+    with tempfile.TemporaryDirectory() as directory:
+        sheet = Path(directory) / "sheet.jpg"; sheet.write_bytes(sheet_file.file.read())
+        prompt = PROMPT.format(moves=moves, start=start, end=end)
+        result = subprocess.run(["hermes", "-p", "asisten-konten", "chat", "-Q", "--source", "tool", "-t", "vision", "--image", str(sheet), "-q", prompt], capture_output=True, text=True, timeout=300)
+        if result.returncode: raise HTTPException(502, (result.stderr or "Hermes vision failed")[-1000:])
+        return {"detections": parse_json(result.stdout)}
 
 
 @app.get("/health")
