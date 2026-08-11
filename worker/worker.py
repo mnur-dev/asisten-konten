@@ -54,20 +54,25 @@ def analyze_sheets_parallel(sheets, moves, analyze, workers=6):
     return ordered
 
 
-def segment_ranges(duration, seconds=10):
-    return [(start, min(duration, start + seconds)) for start in range(0, int(duration), seconds)]
+def segment_ranges(duration, seconds=10, overlap=1):
+    step = seconds - overlap
+    return [(start, min(duration, start + seconds)) for start in range(0, int(duration), step)]
 
 
 def detect_via_controller(video, timeline, output, directory):
     duration = float(subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", str(video)], capture_output=True, text=True, check=True).stdout)
-    sheets = []
+    sheets = []; cache = Path(directory) / "vision-cache"; cache.mkdir()
     for start, end in segment_ranges(duration):
         sheet = Path(directory) / f"sheet-{start:05d}.jpg"
         contact_sheet(video, sheet, start, end-start); sheets.append((start, end, sheet))
     logging.info("Created %d contact sheets; analyzing with %d parallel calls", len(sheets), int(os.getenv("VISION_WORKERS", "6")))
     def analyze(start, end, sheet, moves):
+        cached = cache / f"{start:05d}.json"
+        if cached.is_file(): return json.loads(cached.read_text(encoding="utf-8"))
         with sheet.open("rb") as file:
-            return request("POST", URL+"/api/vision/analyze-sheet", headers=H, data={"start":start,"end":end,"moves":moves}, files={"sheet_file":("sheet.jpg",file,"image/jpeg")}, timeout=360).json()["detections"]
+            detections = request("POST", URL+"/api/vision/analyze-sheet", headers=H, data={"start":start,"end":end,"moves":moves}, files={"sheet_file":("sheet.jpg",file,"image/jpeg")}, timeout=360).json()["detections"]
+        cached.write_text(json.dumps(detections), encoding="utf-8")
+        return detections
     moves = [item["san"] for item in timeline["moves"]]
     found = analyze_sheets_parallel(sheets, moves, analyze, int(os.getenv("VISION_WORKERS", "6")))
     if len(found) != len(timeline["moves"]): raise RuntimeError(f"AI detected {len(found)} moves for {len(timeline['moves'])} PGN plies")

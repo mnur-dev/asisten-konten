@@ -3,7 +3,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 from shared.timeline import parse_pgn
 
-PROMPT = '''Analyze ONLY physical chessboard in this contact sheet. Frame labels are absolute source-video seconds at 0.25-second intervals. Ignore digital-board overlay. Return ONLY valid JSON array, no markdown: [{{"timestamp":8.75,"confidence":0.9}}]. Timestamp means moved piece has been released and physical position first becomes stable. Count each physical move once. Exclude handshake, clock press, repeated stable frames, and non-move gestures. PGN move order starts: {moves}. This sheet covers {start:.2f}–{end:.2f}s.'''
+PROMPT = '''Inspect every labeled frame of this contact sheet in chronological order. The image is cropped around the PHYSICAL chessboard; ignore any digital-board overlay still visible. Detect every real move where a hand relocates a physical piece. Return ONLY a valid JSON array, no markdown: [{{"timestamp":8.75,"confidence":0.9}}]. Timestamp is the first labeled frame where the moved piece has been released on its destination square; do not wait for clock press or complete stillness. Count fast consecutive moves separately. Exclude handshake, clock press, repeated stable frames, camera changes, and gestures without a piece relocation. Do not return objects without timestamp. Relevant PGN sequence: {moves}. Sheet interval: {start:.2f}–{end:.2f}s.'''
 
 
 def format_prompt(moves, start, end):
@@ -20,7 +20,7 @@ def contact_sheet(video, output, start, seconds=10):
     output = Path(output)
     with tempfile.TemporaryDirectory() as directory:
         pattern = str(Path(directory) / "%04d.jpg")
-        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(start), "-i", str(video), "-t", str(seconds), "-vf", "fps=4,scale=320:180", pattern], check=True)
+        subprocess.run(["ffmpeg", "-y", "-v", "error", "-ss", str(start), "-i", str(video), "-t", str(seconds), "-vf", "fps=4,crop=640:360:320:340,scale=320:180", pattern], check=True)
         frames = sorted(Path(directory).glob("*.jpg"))
         if not frames: raise RuntimeError("FFmpeg created no contact-sheet frames")
         sheet = Image.new("RGB", (1600, 1440), "black")
