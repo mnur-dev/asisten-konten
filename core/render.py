@@ -1,0 +1,214 @@
+"""Render a board video whose ply durations follow detected timestamps.
+
+One PNG per ply plus FFmpeg's concat demuxer, so encoding cost scales with the
+number of moves rather than the number of output frames.
+"""
+import os
+import shutil
+import subprocess
+import tempfile
+from pathlib import Path
+
+import chess
+from PIL import Image, ImageDraw, ImageFont
+
+GLYPHS = {"P": "♙", "N": "♘", "B": "♗", "R": "♖", "Q": "♕", "K": "♔",
+          "p": "♟", "n": "♞", "b": "♝", "r": "♜", "q": "♛", "k": "♚"}
+
+# light, dark, highlight-on-light, highlight-on-dark, page background
+THEMES = {
+    "green":    ("#eeeed2", "#769656", "#f6f669", "#baca2b", "#262421"),
+    "chesscom": ("#ebecd0", "#739552", "#f7f769", "#b9ca43", "#302e2b"),
+    "blue":     ("#dee3e6", "#8ca2ad", "#cdd26a", "#aaa23b", "#22272b"),
+    "wood":     ("#f0d9b5", "#b58863", "#f7ec74", "#dac431", "#2b2622"),
+    "slate":    ("#e6e9ee", "#4a5568", "#e9c46a", "#b98a2f", "#171a20"),
+}
+DEFAULT_THEME = "green"
+
+
+def theme_colours(name):
+    return THEMES.get(name or DEFAULT_THEME, THEMES[DEFAULT_THEME])
+
+
+def find_font():
+    candidates = []
+    if windir := os.environ.get("WINDIR"):
+        candidates.append(Path(windir) / "Fonts" / "seguisym.ttf")
+    candidates += [Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                   Path("/System/Library/Fonts/Apple Symbols.ttf")]
+    for font in candidates:
+        if font.is_file():
+            return font
+    raise RuntimeError("No Unicode chess font found")
+
+
+def fitted_font(draw, text, max_width, ceiling):
+    """Largest font size at which `text` still fits inside the bar."""
+    path = str(find_font())
+    for size in range(ceiling, 6, -1):
+        font = ImageFont.truetype(path, size)
+        if draw.textlength(text, font=font) <= max_width:
+            return font
+    return ImageFont.truetype(path, 7)
+
+
+def draw_eval_bar(draw, box, share, text=""):
+    """Vertical advantage bar: white grows from the bottom, black from the top."""
+    x0, y0, x1, y1 = box
+    width, height = x1 - x0, y1 - y0
+    radius = max(2, width // 3)
+    draw.rounded_rectangle(box, radius=radius, fill="#26262b")
+    split = y1 - int(height * max(0.0, min(1.0, share)))
+    if split < y1 - 1:
+        draw.rounded_rectangle((x0, max(y0, split - radius), x1, y1),
+                               radius=radius, fill="#f2f2ef")
+    if split > y0 + 1:
+        draw.rounded_rectangle((x0, y0, x1, min(y1, split + radius)),
+                               radius=radius, fill="#26262b")
+    draw.line((x0, split, x1, split), fill="#9a9a92", width=max(1, width // 12))
+    if not text:
+        return
+    font = fitted_font(draw, text, width * 0.92, max(24, int(width * 0.85)))
+    leading = share >= 0.5                    # the side that is winning holds the label
+    pad = max(2, int(width * 0.22))
+    draw.text(((x0 + x1) / 2, y1 - pad if leading else y0 + pad), text, font=font,
+              fill="#26262b" if leading else "#f2f2ef",
+              anchor="ms" if leading else "ma")
+
+
+def board_image(timeline, ply, size=(1920, 1080), orientation="white",
+                theme=DEFAULT_THEME, coordinates=True, piece_set="cburnett",
+                evaluation=None):
+    width, height = size
+    light, dark, hi_light, hi_dark, background = theme_colours(theme)
+    image = Image.new("RGB", size, background)
+    draw = ImageDraw.Draw(image)
+    # the bar needs its own column, so size the board against the width left over
+    base = int(min(height * 0.94, width * 0.94) // 8)
+    bar_width = max(10, int(base * 0.42)) if evaluation is not None else 0
+    gap = max(4, int(base * 0.18)) if evaluation is not None else 0
+    square = int(min(height * 0.94, (width - bar_width - gap) * 0.94) // 8)
+    side = square * 8
+    ox = (width - side - bar_width - gap) // 2 + bar_width + gap
+    oy = (height - side) // 2
+
+    board = chess.Board(timeline["initial_fen"])
+    last = None
+    for move in timeline["moves"][:ply]:
+        last = chess.Move.from_uci(move["uci"])
+        board.push(last)
+
+    ranks = range(7, -1, -1) if orientation == "white" else range(8)
+    files = range(8) if orientation == "white" else range(7, -1, -1)
+
+    try:
+        from core import pieces
+        artwork = pieces.available(piece_set)
+    except Exception:
+        artwork = False
+    piece_font = None if artwork else ImageFont.truetype(str(find_font()), int(square * 0.78))
+    label_font = ImageFont.truetype(str(find_font()), max(10, int(square * 0.16)))
+
+    for row, rank in enumerate(ranks):
+        for col, file in enumerate(files):
+            index = chess.square(file, rank)
+            pale = (file + rank) % 2
+            colour = light if pale else dark
+            if last and index in (last.from_square, last.to_square):
+                colour = hi_light if pale else hi_dark
+            box = (ox + col * square, oy + row * square,
+                   ox + (col + 1) * square, oy + (row + 1) * square)
+            draw.rectangle(box, fill=colour)
+            if coordinates:
+                # coordinates sit inside the board edge, the way modern boards do it
+                ink = dark if pale else light
+                if col == 0:
+                    draw.text((box[0] + square * 0.07, box[1] + square * 0.05),
+                              str(rank + 1), font=label_font, fill=ink)
+                if row == 7:
+                    draw.text((box[2] - square * 0.07, box[3] - square * 0.05),
+                              "abcdefgh"[file], font=label_font, fill=ink, anchor="rd")
+            piece = board.piece_at(index)
+            if not piece:
+                continue
+            if artwork:
+                art = pieces.piece_image(piece.symbol(), square, piece_set)
+                image.paste(art, (box[0], box[1]), art)
+            else:
+                draw.text((box[0] + square / 2, box[1] + square / 2), GLYPHS[piece.symbol()],
+                          font=piece_font, anchor="mm",
+                          fill="#ffffff" if piece.color else "#111111",
+                          stroke_width=max(1, square // 34),
+                          stroke_fill="#111111" if piece.color else "#dddddd")
+
+    if evaluation is not None:
+        from core.evaluation import advantage, label
+        draw_eval_bar(draw, (ox - gap - bar_width, oy, ox - gap, oy + side),
+                      advantage(evaluation), label(evaluation))
+    return image
+
+
+def pick_encoder():
+    probe = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-loglevel", "error", "-f", "lavfi",
+         "-i", "color=size=640x360:rate=1", "-frames:v", "1", "-c:v", "h264_nvenc",
+         "-f", "null", "-"], capture_output=True)
+    return "h264_nvenc" if probe.returncode == 0 else "libx264"
+
+
+def durations_from_waypoints(waypoints, tail=3.0):
+    """[(ply, seconds)] — ply n is on screen until ply n+1 lands."""
+    times = [w["timestamp"] for w in waypoints if w["timestamp"] is not None]
+    if not times:
+        raise ValueError("no timestamps to render")
+    plan = [(0, times[0])]
+    for index in range(len(times) - 1):
+        plan.append((index + 1, max(0.04, times[index + 1] - times[index])))
+    plan.append((len(times), tail))
+    return plan
+
+
+def render(timeline, plan, output, size=(1920, 1080), fps=30, encoder=None,
+           theme=DEFAULT_THEME, piece_set="cburnett", evaluations=None):
+    if not shutil.which("ffmpeg"):
+        raise RuntimeError("FFmpeg not installed")
+    output = Path(output)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    encoder = encoder or pick_encoder()
+    with tempfile.TemporaryDirectory() as directory:
+        directory = Path(directory)
+        entries = []
+        for index, (ply, seconds) in enumerate(plan):
+            frame = directory / f"{index:05d}.png"
+            score = None
+            if evaluations is not None:
+                score = evaluations[ply - 1] if 0 < ply <= len(evaluations) else {"cp": 0}
+            board_image(timeline, ply, size, theme=theme, piece_set=piece_set,
+                        evaluation=score).save(frame)
+            entries.append(f"file '{frame.as_posix()}'\nduration {seconds:.3f}")
+        entries.append(f"file '{(directory / f'{len(plan)-1:05d}.png').as_posix()}'")
+        listing = directory / "frames.txt"
+        listing.write_text("\n".join(entries) + "\n", encoding="utf-8")
+        command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                   "-i", str(listing), "-fps_mode", "cfr", "-r", str(fps),
+                   "-c:v", encoder, "-pix_fmt", "yuv420p", str(output)]
+        result = subprocess.run(command, capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(f"FFmpeg failed with {encoder}: {result.stderr.strip()[-800:]}")
+    return output
+
+
+def side_by_side(source, board_video, output, start=0.0, width=800, encoder=None):
+    """One frame showing the broadcast and the generated board together."""
+    encoder = encoder or pick_encoder()
+    quality = ["-cq", "28"] if encoder == "h264_nvenc" else ["-crf", "26", "-preset", "veryfast"]
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(start), "-i", str(source),
+               "-i", str(board_video), "-filter_complex",
+               f"[0:v]scale={width}:-2,setsar=1[a];[1:v]scale={width}:-2,setsar=1[b];"
+               "[a][b]hstack=inputs=2[v]",
+               "-map", "[v]", "-c:v", encoder, *quality, "-pix_fmt", "yuv420p",
+               "-shortest", str(output)]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"Comparison render failed: {result.stderr.strip()[-800:]}")
+    return Path(output)

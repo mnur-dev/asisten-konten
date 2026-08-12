@@ -1,0 +1,116 @@
+# Asisten Konten — catatan proyek
+
+Aplikasi lokal untuk membuat video papan catur yang **timing-nya mengikuti video
+siaran**, bukan jam di PGN. Tujuan akhirnya menggantikan pekerjaan manual:
+menonton pertandingan penuh (10–30 menit) sambil menekan tombol "next" di papan
+analisis lalu merekam layar.
+
+Semua berjalan lokal di Windows. Tidak ada VPS.
+
+```bash
+python -m app          # buka http://127.0.0.1:8420
+```
+
+**Server tidak punya auto-reload.** Setelah mengubah kode di `core/` atau `app/`,
+hentikan prosesnya (`Stop-Process` pada PID yang listen di port 8420) lalu jalankan
+ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
+
+## Alur kerja
+
+1. **Buat proyek** — path video di PC + teks PGN
+2. **Deteksi** — baca papan overlay digital di video, cocokkan tiap frame ke posisi PGN
+3. **Pilih papan fisik** — tarik kotak sekali per video (manual, lihat catatan di bawah)
+4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
+5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
+6. **Render** — `board.mp4` + `compare.mp4` (side-by-side untuk verifikasi)
+
+## Struktur
+
+```
+app/main.py        FastAPI localhost, tanpa auth. Deteksi/render jalan di thread.
+app/ui/index.html  satu halaman, vanilla JS, tanpa build step
+core/pgn.py        parse PGN + signature okupansi 8x8 per ply
+core/video.py      helper ffmpeg (probe, sampling gray)
+core/overlay.py    lokalisasi papan overlay + baca isi kotak
+core/align.py      DP monoton frame -> ply
+core/detect.py     orkestrasi deteksi overlay
+core/physical.py   re-timing dari papan kayu (changepoint)
+core/render.py     tema, eval bar, render concat-demuxer, side-by-side
+core/pieces.py     rasterisasi SVG bidak lewat pycairo
+core/audio.py      sintesis suara langkah + mux
+core/evaluation.py sumber evaluasi (PGN [%eval] atau engine UCI)
+projects/<id>/     meta.json, input.pgn, timestamps.json, evals.json, *.mp4, log.txt
+```
+
+`controller/`, `worker/`, `renderer/`, `shared/`, `tests/` adalah **sistem VPS lama
+yang sudah digantikan** dan belum dihapus. Menunggu konfirmasi pengguna sebelum
+dihapus lewat commit.
+
+## Temuan terukur (jangan diturunkan ulang)
+
+**Deteksi overlay bekerja sangat baik.** Papan overlay dicocokkan ke posisi PGN
+lewat okupansi 64 kotak. Di video Carlsen–Gao, 32/32 ply dengan cost 0 (semua
+kotak cocok persis). Di Murzin, 68/69 ply.
+
+- Okupansi kotak = `std piksel > 20` — terbukti 64/64 sempurna
+- Warna bidak = `fraksi piksel < 70` dengan ambang `0.269` — error 0,14% dari 5550 sampel
+- Rata-rata piksel **tidak bisa** dipakai untuk warna: bidak putih di kotak terang
+  punya mean hampir sama dengan kotak kosong
+
+**Metrik diff global tidak akan pernah bekerja.** Satu bidak = 2 dari 64 kotak.
+Dirata-rata ke seluruh papan, perubahannya larut. Diukur di video nyata: langkah
+asli menghasilkan diff 2–7, sedangkan zoom kamera 55 dan potongan 129. Sinyal
+8–25× lebih kecil dari noise. Ini sebab sistem lama gagal.
+
+**Overlay tertinggal dari papan fisik.** Median 0,6 detik, tapi di time scramble
+bisa 4–5 detik (contoh terukur: 29.Kd2 overlay 452,00 vs papan fisik 447,40).
+Karena itu re-timing papan fisik ada.
+
+**Lokalisasi papan fisik otomatis GAGAL.** Tiga pendekatan dicoba dan ketiganya
+menemukan pemain, bukan papan: peta perubahan persisten, rasio waktu-langkah vs
+waktu-acak, dan kriteria sparsity. Penyebabnya pemain berganti postur secara
+permanen sementara bidak kayu kontrasnya rendah. **Area papan ditarik manual di
+UI.** Jangan ulangi eksperimen ini tanpa ide yang benar-benar baru.
+
+**Overlay kadang menampilkan papan lain.** Di turnamen beregu grafisnya bergiliran
+antar papan. Sekitar 4 dari 18 frame kalibrasi tidak cocok. Karena itu ada verify
+gate: sumber apa pun harus membuktikan diri terhadap PGN sebelum dipercaya.
+
+## Engine
+
+Stockfish 18 (build `bmi2`, cocok untuk Intel Kaby Lake) terpasang di
+`engines/stockfish/stockfish-windows-x86-64-bmi2.exe` dan terdeteksi otomatis
+oleh `evaluation.find_engine()`. Folder `engines/` di-gitignore — kalau repo
+di-clone ulang, unduh lagi dari rilis resmi `official-stockfish/Stockfish`.
+
+Evaluasi 69 ply memakan ~20 detik pada `movetime=0.25` dengan 3 thread.
+
+## Jebakan yang sudah pernah menggigit
+
+- **`re-time` harus idempoten.** Selalu acu ke `overlay_timestamp` yang tersimpan,
+  jangan ke `timestamp` saat ini. Pernah bug: run kedua memakai hasil run pertama
+  sebagai acuan dan merusak hasil diam-diam.
+- **Ply yang sudah diedit manual tidak boleh ditimpa** oleh re-time.
+- **pycairo di Windows me-link cairo secara statis** ke dalam `.pyd`. `cairosvg`,
+  `cairocffi`, dan `rlPyCairo` semuanya gagal mencari DLL. Karena itu `core/pieces.py`
+  menggambar SVG langsung ke pycairo.
+- **Polling status UI harus berhenti** saat pekerjaan selesai, kalau tidak redraw
+  tiap 1,5 detik memutus pemutar video di panel review.
+- **`-vsync` tidak dikenal** oleh ffmpeg versi ini; pakai `-fps_mode`.
+- Render lama memompa frame mentah ke pipe (336 GB untuk video 30 menit 1080p).
+  Sekarang concat demuxer: satu PNG per ply, selesai dalam hitungan detik.
+
+## Yang belum selesai
+
+- **Klasifikasi langkah** ala chess.com (Brilliant/Great/Blunder): butuh MultiPV
+  2–3 plus cek pengorbanan materi. Ambang chess.com tidak dipublikasikan; rencana
+  memakai rumus win% Lichess sebagai pendekatan. Ini pekerjaan berikutnya.
+- **Hapus sistem VPS lama** setelah pengguna puas dengan yang baru.
+- **Test otomatis untuk `core/`** belum ada. `tests/` yang ada menguji sistem lama.
+- Pemutaran video di panel review belum pernah diverifikasi di browser sungguhan
+  (panel headless tidak meng-compose frame sehingga video ter-suspend).
+
+## Bahasa
+
+Pengguna berkomunikasi dalam bahasa Indonesia. Balas dalam bahasa Indonesia.
+Komentar dan nama di dalam kode tetap bahasa Inggris.

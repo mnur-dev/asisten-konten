@@ -1,7 +1,7 @@
 python-chess==1.999
 Pillow==12.3.0
+numpy==2.5.2
 fastapi==0.141.1
 uvicorn==0.52.1
 python-multipart==0.0.32
-requests==2.34.2
 yt-dlp==2026.7.4

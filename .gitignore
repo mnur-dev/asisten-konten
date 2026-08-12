@@ -7,3 +7,16 @@ storage/results/*
 storage/jobs.db
 !storage/inputs/.gitkeep
 !storage/results/.gitkeep
+projects/
+engines/
+
+# working media: source clips, frames, and rendered output are not source code
+*.mp4
+*.m4a
+*.wav
+artifacts/
+physical-board-*.jpg
+physical-board-*.png
+board-layout.jpg
+!samples/*.pgn
+!samples/*.json
