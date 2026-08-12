@@ -1,7 +1,24 @@
 """FFmpeg helpers: probing and raw grayscale sampling."""
 import json
 import subprocess
+import sys
+from pathlib import Path
+
 import numpy as np
+
+
+def download(url, output) -> Path:
+    """Fetch a video with yt-dlp, merged into a single mp4 at `output`."""
+    output = Path(output)
+    command = [sys.executable, "-m", "yt_dlp", "-f",
+               "bv*[height<=1080]+ba/b[height<=1080]/best",
+               "--merge-output-format", "mp4", "--no-playlist", "-o", str(output), url]
+    result = subprocess.run(command, capture_output=True, text=True)
+    if result.returncode:
+        raise RuntimeError(f"Video download failed: {result.stderr.strip()[-800:]}")
+    if not output.is_file():
+        raise RuntimeError("yt-dlp reported success but wrote no file")
+    return output
 
 
 def probe(path) -> dict:

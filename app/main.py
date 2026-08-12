@@ -14,8 +14,8 @@ from core import audio, evaluation, physical, pieces
 from core.detect import detect
 from core.pgn import parse_pgn
 from core.render import (DEFAULT_THEME, THEMES, board_image, durations_from_waypoints,
-                         render, side_by_side)
-from core.video import probe
+                         fit_size, render, side_by_side)
+from core.video import download, probe
 
 ROOT = Path(__file__).parents[1]
 PROJECTS = ROOT / "projects"
@@ -80,7 +80,7 @@ def background(project_id: str, work):
 
 class NewProject(BaseModel):
     name: str = ""
-    video_path: str
+    video_url: str
     pgn_text: str
 
 
@@ -101,37 +101,46 @@ def list_projects():
 
 @app.post("/api/projects", status_code=201)
 def create(data: NewProject):
-    video = Path(data.video_path.strip().strip('"'))
-    if not video.is_file():
-        raise HTTPException(400, f"Video not found: {video}")
+    url = data.video_url.strip()
+    if not url:
+        raise HTTPException(400, "Video link is required")
     try:
         timeline = parse_pgn(data.pgn_text)
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 
-    info = probe(video)
     project_id = uuid.uuid4().hex[:12]
     path = PROJECTS / project_id
     path.mkdir()
     (path / "input.pgn").write_text(data.pgn_text, encoding="utf-8")
+    video = path / "source.mp4"
+    white, black = timeline["headers"].get("White", ""), timeline["headers"].get("Black", "")
     write_meta(path, {
         "id": project_id,
-        "name": data.name or video.stem,
+        "name": data.name or (f"{white} - {black}" if white or black else project_id),
         "video": str(video),
-        "status": "new",
+        "video_url": url,
+        "status": "downloading",
         "plies_total": len(timeline["moves"]),
-        "white": timeline["headers"].get("White", ""),
-        "black": timeline["headers"].get("Black", ""),
-        "width": info["width"],
-        "height": info["height"],
-        "duration": round(info["duration"], 2),
+        "white": white,
+        "black": black,
         "board_rect": None,
         "theme": DEFAULT_THEME,
         "piece_set": pieces.BUNDLED,
         "sound": True,
         "eval_bar": False,
     })
-    return {"id": project_id}
+
+    def work(path: Path):
+        logging.getLogger("core").info("Mengunduh video dari %s", url)
+        download(url, video)
+        info = probe(video)
+        logging.getLogger("core").info("Unduh video selesai")
+        update(path, status="new", width=info["width"], height=info["height"],
+               duration=round(info["duration"], 2))
+
+    background(project_id, work)
+    return {"id": project_id, "status": "downloading"}
 
 
 @app.get("/api/projects/{project_id}")
@@ -151,7 +160,7 @@ def status(project_id: str):
              "move_number": moves[w["ply"]]["move_number"]}
             for w in data["waypoints"] if w["ply"] in moves]
         meta["overlay_rect"] = data.get("overlay_rect")
-    meta["outputs"] = [f.name for f in path.glob("*.mp4")]
+    meta["outputs"] = [f.name for f in path.glob("*.mp4") if f.name != "source.mp4"]
     meta["themes"] = list(THEMES)
     meta["piece_sets"] = pieces.available_sets()
     meta.setdefault("theme", DEFAULT_THEME)
@@ -305,6 +314,7 @@ def start_render(project_id: str, compare: bool = Body(True, embed=True)):
             "Rendering %d segments (%s / %s%s)", len(plan), meta.get("theme"),
             meta.get("piece_set"), ", eval bar" if scores else "")
         render(timeline, plan, path / "board.mp4",
+               size=fit_size(evaluation=bool(scores)),
                theme=meta.get("theme", DEFAULT_THEME),
                piece_set=meta.get("piece_set", pieces.BUNDLED),
                evaluations=scores)
@@ -319,6 +329,7 @@ def start_render(project_id: str, compare: bool = Body(True, embed=True)):
         if compare:
             logging.getLogger("core").info("Rendering comparison")
             side_by_side(meta["video"], path / "board.mp4", path / "compare.mp4", width=800)
+        logging.getLogger("core").info("Render selesai")
         update(path, status="done")
 
     background(project_id, work)

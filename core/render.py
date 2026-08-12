@@ -30,6 +30,32 @@ def theme_colours(name):
     return THEMES.get(name or DEFAULT_THEME, THEMES[DEFAULT_THEME])
 
 
+# king (from, to) -> rook (from, to), for animating the rook alongside the king
+_CASTLING_ROOKS = {
+    (chess.E1, chess.G1): (chess.H1, chess.F1),
+    (chess.E1, chess.C1): (chess.A1, chess.D1),
+    (chess.E8, chess.G8): (chess.H8, chess.F8),
+    (chess.E8, chess.C8): (chess.A8, chess.D8),
+}
+
+
+def _square_pixel(index, ox, oy, square, orientation):
+    """Top-left pixel of a square's box, matching board_image's own layout."""
+    file, rank = chess.square_file(index), chess.square_rank(index)
+    col, row = (file, 7 - rank) if orientation == "white" else (7 - file, rank)
+    return ox + col * square, oy + row * square
+
+
+def fit_size(square_px=135, evaluation=False, margin=0.06):
+    """Canvas sized tightly around the board (plus the eval bar strip), no letterboxing."""
+    bar_width = max(10, int(square_px * 0.42)) if evaluation else 0
+    gap = max(4, int(square_px * 0.18)) if evaluation else 0
+    side = square_px * 8
+    width = int((side + bar_width + gap) / (1 - margin))
+    height = int(side / (1 - margin))
+    return width, height
+
+
 def find_font():
     candidates = []
     if windir := os.environ.get("WINDIR"):
@@ -78,7 +104,9 @@ def draw_eval_bar(draw, box, share, text=""):
 
 def board_image(timeline, ply, size=(1920, 1080), orientation="white",
                 theme=DEFAULT_THEME, coordinates=True, piece_set="cburnett",
-                evaluation=None):
+                evaluation=None, progress=None):
+    """`progress` in [0, 1) mid-slides the last move's piece(s) from origin to
+    destination instead of showing them landed; omit it for the settled position."""
     width, height = size
     light, dark, hi_light, hi_dark, background = theme_colours(theme)
     image = Image.new("RGB", size, background)
@@ -98,6 +126,16 @@ def board_image(timeline, ply, size=(1920, 1080), orientation="white",
         last = chess.Move.from_uci(move["uci"])
         board.push(last)
 
+    # squares whose landed piece is drawn mid-flight instead, plus where it flies from/to
+    movers, hidden = [], set()
+    if progress is not None and progress < 1.0 and last is not None:
+        movers.append((board.piece_at(last.to_square), last.from_square, last.to_square))
+        hidden.add(last.to_square)
+        if rook_squares := _CASTLING_ROOKS.get((last.from_square, last.to_square)):
+            rook_from, rook_to = rook_squares
+            movers.append((board.piece_at(rook_to), rook_from, rook_to))
+            hidden.add(rook_to)
+
     ranks = range(7, -1, -1) if orientation == "white" else range(8)
     files = range(8) if orientation == "white" else range(7, -1, -1)
 
@@ -108,6 +146,17 @@ def board_image(timeline, ply, size=(1920, 1080), orientation="white",
         artwork = False
     piece_font = None if artwork else ImageFont.truetype(str(find_font()), int(square * 0.78))
     label_font = ImageFont.truetype(str(find_font()), max(10, int(square * 0.16)))
+
+    def draw_piece(piece, x, y):
+        if artwork:
+            art = pieces.piece_image(piece.symbol(), square, piece_set)
+            image.paste(art, (int(x), int(y)), art)
+        else:
+            draw.text((x + square / 2, y + square / 2), GLYPHS[piece.symbol()],
+                      font=piece_font, anchor="mm",
+                      fill="#ffffff" if piece.color else "#111111",
+                      stroke_width=max(1, square // 34),
+                      stroke_fill="#111111" if piece.color else "#dddddd")
 
     for row, rank in enumerate(ranks):
         for col, file in enumerate(files):
@@ -128,18 +177,18 @@ def board_image(timeline, ply, size=(1920, 1080), orientation="white",
                 if row == 7:
                     draw.text((box[2] - square * 0.07, box[3] - square * 0.05),
                               "abcdefgh"[file], font=label_font, fill=ink, anchor="rd")
-            piece = board.piece_at(index)
-            if not piece:
+            if index in hidden:
                 continue
-            if artwork:
-                art = pieces.piece_image(piece.symbol(), square, piece_set)
-                image.paste(art, (box[0], box[1]), art)
-            else:
-                draw.text((box[0] + square / 2, box[1] + square / 2), GLYPHS[piece.symbol()],
-                          font=piece_font, anchor="mm",
-                          fill="#ffffff" if piece.color else "#111111",
-                          stroke_width=max(1, square // 34),
-                          stroke_fill="#111111" if piece.color else "#dddddd")
+            piece = board.piece_at(index)
+            if piece:
+                draw_piece(piece, box[0], box[1])
+
+    for piece, from_square, to_square in movers:
+        if piece is None:
+            continue
+        x0, y0 = _square_pixel(from_square, ox, oy, square, orientation)
+        x1, y1 = _square_pixel(to_square, ox, oy, square, orientation)
+        draw_piece(piece, x0 + (x1 - x0) * progress, y0 + (y1 - y0) * progress)
 
     if evaluation is not None:
         from core.evaluation import advantage, label
@@ -169,7 +218,9 @@ def durations_from_waypoints(waypoints, tail=3.0):
 
 
 def render(timeline, plan, output, size=(1920, 1080), fps=30, encoder=None,
-           theme=DEFAULT_THEME, piece_set="cburnett", evaluations=None):
+           theme=DEFAULT_THEME, piece_set="cburnett", evaluations=None, transition=0.15):
+    """`transition` is how long (seconds) a moved piece takes to slide into place;
+    0 falls back to an instant cut, like the previous one-frame-per-ply behaviour."""
     if not shutil.which("ffmpeg"):
         raise RuntimeError("FFmpeg not installed")
     output = Path(output)
@@ -178,15 +229,26 @@ def render(timeline, plan, output, size=(1920, 1080), fps=30, encoder=None,
     with tempfile.TemporaryDirectory() as directory:
         directory = Path(directory)
         entries = []
-        for index, (ply, seconds) in enumerate(plan):
-            frame = directory / f"{index:05d}.png"
+        index = 0
+        for ply, seconds in plan:
             score = None
             if evaluations is not None:
                 score = evaluations[ply - 1] if 0 < ply <= len(evaluations) else {"cp": 0}
-            board_image(timeline, ply, size, theme=theme, piece_set=piece_set,
-                        evaluation=score).save(frame)
-            entries.append(f"file '{frame.as_posix()}'\nduration {seconds:.3f}")
-        entries.append(f"file '{(directory / f'{len(plan)-1:05d}.png').as_posix()}'")
+            slide = min(transition, seconds) if ply > 0 else 0.0
+            if slide > 0:
+                steps = max(2, round(slide * fps))
+                step_seconds = slide / steps
+                frames = [(k / steps, step_seconds) for k in range(1, steps)]
+                frames.append((None, step_seconds + (seconds - slide)))
+            else:
+                frames = [(None, seconds)]
+            for progress, duration in frames:
+                frame = directory / f"{index:05d}.png"
+                board_image(timeline, ply, size, theme=theme, piece_set=piece_set,
+                            evaluation=score, progress=progress).save(frame)
+                entries.append(f"file '{frame.as_posix()}'\nduration {duration:.4f}")
+                index += 1
+        entries.append(f"file '{(directory / f'{index - 1:05d}.png').as_posix()}'")
         listing = directory / "frames.txt"
         listing.write_text("\n".join(entries) + "\n", encoding="utf-8")
         command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",

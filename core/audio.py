@@ -1,11 +1,5 @@
-"""Move sounds, synthesised rather than shipped.
-
-A wooden piece landing on a board is a struck-object sound: a handful of decaying
-resonant modes plus a short noise transient from the contact. Modelling it that
-way keeps the project free of binary assets and licences, and lets capture and
-check sound different without needing more files.
-"""
-import struct
+"""Move sounds, loaded from the recorded clips in assets/sounds."""
+import functools
 import subprocess
 import wave
 from pathlib import Path
@@ -14,33 +8,29 @@ import numpy as np
 
 RATE = 48000
 
-# (frequency Hz, amplitude, decay seconds) — the modes of a small wooden block
-WOOD = [(196, 1.00, 0.055), (523, 0.55, 0.040), (1180, 0.30, 0.026), (2640, 0.16, 0.014)]
+ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "sounds"
+
+# event kind -> source clip
+CLIPS = {
+    "move": "move-self.mp3",
+    "capture": "capture.mp3",
+    "castle": "castle.mp3",
+    "check": "move-check.mp3",
+}
 
 
-def _click(gain=1.0, brightness=1.0, length=0.13, seed=0):
-    n = int(RATE * length)
-    t = np.arange(n) / RATE
-    signal = np.zeros(n, np.float64)
-    for frequency, amplitude, decay in WOOD:
-        signal += amplitude * np.sin(2 * np.pi * frequency * brightness * t) * np.exp(-t / decay)
-    # contact transient: a very short burst of noise, high-passed by differencing
-    rng = np.random.default_rng(seed)
-    burst = rng.standard_normal(n) * np.exp(-t / 0.0035)
-    signal += 0.55 * np.diff(burst, prepend=0.0)
-    signal *= 1 - np.exp(-t / 0.0008)          # remove the click at sample zero
-    peak = np.abs(signal).max()
-    return (signal / peak * gain) if peak else signal
+@functools.lru_cache(maxsize=None)
+def _load(name, rate=RATE):
+    """Decode a clip to mono float64 samples in [-1, 1] at `rate`."""
+    path = ASSETS_DIR / name
+    command = ["ffmpeg", "-v", "error", "-i", str(path), "-ac", "1", "-ar", str(rate), "-f", "s16le", "-"]
+    raw = subprocess.run(command, capture_output=True, check=True).stdout
+    return np.frombuffer(raw, "<i2").astype(np.float64) / 32768.0
 
 
 def voices():
-    """One sound per event kind, all derived from the same wooden model."""
-    return {
-        "move": _click(0.55, 1.00, seed=1),
-        "capture": _click(0.85, 1.18, length=0.16, seed=2),
-        "castle": _click(0.62, 0.92, length=0.17, seed=3),
-        "check": _click(0.80, 1.30, length=0.18, seed=4),
-    }
+    """One sound per event kind, decoded from the recorded clips."""
+    return {kind: _load(clip) for kind, clip in CLIPS.items()}
 
 
 def classify(san: str) -> str:
