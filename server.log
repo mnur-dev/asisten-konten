@@ -1,1 +1,10 @@
-[INFO] core: Mengunduh video dari https://www.w3schools.com/html/mov_bbb.mp4
+[INFO] core.detect: source.mp4 | 1920x1080 | 1209.4s | 72 plies
+[INFO] core.detect: Overlay candidate at (658, 0, 520) (checkerboard 7.40/8)
+[INFO] core.detect: Refined to (658, 0, 520) | exact occupancy matches 8/18 (44%)
+[INFO] core.detect: Sampled 4837 frames at 4 fps
+[INFO] core.detect: Plies directly observed: 72/72
+[INFO] core.physical: Physical re-timing: 51/72 plies moved, median -1.10s, p10 -4.15s, 48 flagged for review
+[INFO] core: Rendering 73 segments (wood / cburnett)
+[INFO] core: Adding move sounds
+[INFO] core: Menimpa board overlay di video asli (5 logo dihapus)
+[INFO] core: Render selesai

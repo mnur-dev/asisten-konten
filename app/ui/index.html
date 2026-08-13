@@ -76,6 +76,7 @@
 const $ = (id) => document.getElementById(id);
 let current = null, state = null, selected = null, timer = null, dirty = false;
 let picking = false, pick = null;
+let quadPoints = [], quadDragIndex = null;
 let videoEl = null, rafId = null, rate = 0.5, lookStamp = 0;
 
 async function api(path, options) {
@@ -156,8 +157,10 @@ function draw() {
           <button ${busy ? "disabled" : ""} onclick="run('detect')">
             ${s.waypoints ? "Deteksi ulang" : "Deteksi"}</button>
           <button ${busy ? "disabled" : ""} onclick="togglePicker()">
-            ${s.board_rect ? "Ubah papan fisik" : "Pilih papan fisik"}</button>
-          <button ${busy || !s.waypoints || !s.board_rect ? "disabled" : ""}
+            ${s.board_quad ? "Ubah papan fisik" : "Pilih papan fisik"}</button>
+          <button ${busy ? "disabled" : ""} onclick="toggleLogoPicker()">
+            ${(s.logo_rects || []).length ? `Hapus logo (${s.logo_rects.length})` : "Hapus logo"}</button>
+          <button ${busy || !s.waypoints || !s.board_quad ? "disabled" : ""}
                   onclick="run('retime')" title="Geser waktu tiap ply mengikuti papan kayu">
             Ikuti papan fisik</button>
           <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="run('render')">
@@ -267,35 +270,51 @@ async function evaluate() {
   } catch (e) { alert(e.message); }
 }
 
-function togglePicker() { picking = !picking; draw(); }
+function togglePicker() { picking = picking === "board" ? false : "board"; draw(); }
+function toggleLogoPicker() { picking = picking === "logo" ? false : "logo"; draw(); }
 
 function pickerCard(s) {
+  const isLogo = picking === "logo";
   const at = Math.round((s.duration || 60) * 0.55);
-  const r = s.board_rect;
+  const count = (s.logo_rects || []).length;
   return `<div class="card">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">Area papan fisik</b>
-      <span class="hint">${r ? `x ${r[0]} y ${r[1]} · ${r[2]}×${r[3]} px` : "belum dipilih"}</span>
+      <b style="font-size:13px">${isLogo ? "Area logo" : "Area papan fisik"}</b>
+      <span class="hint">${isLogo ? `${count} kotak`
+        : (s.board_quad ? "4 sudut tersimpan" : "belum dipilih")}</span>
     </div>
-    <p class="hint" style="margin:0 0 9px">Tarik kotak menutupi papan kayu saja — jangan
-      ikutkan pemain, jam, atau papan digital. Cukup sekali per video.</p>
+    <p class="hint" style="margin:0 0 9px">${isLogo
+      ? "Tarik kotak di atas tiap logo/watermark yang mau dihilangkan dari full-video. Bisa lebih dari satu; klik × untuk hapus satu kotak."
+      : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital."}</p>
     <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
            src="/api/projects/${current}/frame?t=${at}&width=880">
-      <div id="pickbox" style="position:absolute;border:2px solid var(--accent);
-           background:rgba(123,178,106,.16);display:none;pointer-events:none"></div>
+      <div id="pickexisting"></div>
+      ${isLogo ? `<div id="pickbox" style="position:absolute;border:2px solid var(--accent);
+           background:rgba(123,178,106,.16);display:none;pointer-events:none"></div>` : `
+      <svg id="pickpoly" style="position:absolute;left:0;top:0;pointer-events:none" width="100%" height="100%">
+        <polygon id="pickpolygon" points="" fill="rgba(123,178,106,.18)" stroke="var(--accent)" stroke-width="2"></polygon>
+      </svg>
+      <div id="pickhandles"></div>`}
     </div>
     <div class="row" style="margin-top:10px">
-      <button class="primary" id="pickok" disabled onclick="saveRect()">Simpan area</button>
-      <button onclick="clearRect()">Hapus area</button>
-      <button onclick="togglePicker()">Tutup</button>
+      ${isLogo
+        ? `<button class="primary" id="pickok" disabled onclick="addLogoRect()">Tambah kotak</button>`
+        : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
+           <button onclick="resetQuad()">Ulang dari awal</button>
+           <button onclick="clearQuad()">Hapus area</button>`}
+      <button onclick="${isLogo ? "toggleLogoPicker" : "togglePicker"}()">Tutup</button>
       <span id="pickmsg" class="hint"></span>
     </div>
   </div>`;
 }
 
 function wirePicker() {
+  if (picking === "logo") wireLogoPicker(); else wireQuadPicker();
+}
+
+function wireLogoPicker() {
   const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
   let start = null;
   const at = (e) => {
@@ -318,38 +337,122 @@ function wirePicker() {
     const rect = [Math.min(start[0], end[0]), Math.min(start[1], end[1]),
                   Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])];
     start = null;
-    if (rect[2] < 20 || rect[3] < 12) { box.style.display = "none"; return; }
+    if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; return; }
     pick = rect.map((v) => Math.round(v * scale));
     $("pickok").disabled = false;
     $("pickmsg").textContent = `${pick[2]}×${pick[3]} px`;
   };
-  if (state.board_rect && img.complete) showSavedRect();
-  else img.onload = () => { if (state.board_rect) showSavedRect(); };
+  if (img.complete) drawExistingRects();
+  else img.onload = drawExistingRects;
 }
 
-function showSavedRect() {
-  const img = $("pickimg"), box = $("pickbox"), r = state.board_rect;
+function drawExistingRects() {
+  const img = $("pickimg"), host = $("pickexisting");
+  if (!img || !host) return;
   const scale = img.clientWidth / state.width;
-  box.style.display = "block";
-  box.style.left = r[0] * scale + "px"; box.style.top = r[1] * scale + "px";
-  box.style.width = r[2] * scale + "px"; box.style.height = r[3] * scale + "px";
+  const rects = state.logo_rects || [];
+  host.innerHTML = rects.map((r, i) => `
+    <div style="position:absolute;left:${r[0] * scale}px;top:${r[1] * scale}px;
+         width:${r[2] * scale}px;height:${r[3] * scale}px;border:2px solid #e2725b;
+         background:rgba(226,114,91,.18)">
+      <button onclick="removeLogoRect(${i})" title="Hapus kotak ini"
+         style="position:absolute;top:-11px;right:-11px;width:20px;height:20px;padding:0;
+         border-radius:50%;font-size:11px;line-height:1;cursor:pointer">×</button>
+    </div>`).join("");
 }
 
-async function saveRect() {
-  if (!pick) return;
-  await api(`/api/projects/${current}/board-rect`, {
+// Board corners: click 4 points to place, then drag any of them to follow the
+// camera's angle on the board instead of forcing an axis-aligned box.
+function wireQuadPicker() {
+  const wrap = $("pickwrap"), img = $("pickimg");
+  const toLocal = (e) => {
+    const b = img.getBoundingClientRect();
+    return [Math.min(Math.max(e.clientX - b.left, 0), b.width),
+            Math.min(Math.max(e.clientY - b.top, 0), b.height)];
+  };
+  const nearestHandle = (p) => {
+    let best = null, bestDist = 16;
+    quadPoints.forEach((q, i) => {
+      const d = Math.hypot(p[0] - q[0], p[1] - q[1]);
+      if (d < bestDist) { bestDist = d; best = i; }
+    });
+    return best;
+  };
+  const init = () => {
+    const scale = img.clientWidth / state.width;
+    quadPoints = state.board_quad ? state.board_quad.map(([x, y]) => [x * scale, y * scale]) : [];
+    quadDragIndex = null;
+    renderQuad();
+  };
+  wrap.onclick = (e) => {
+    if (quadPoints.length >= 4) return;
+    quadPoints.push(toLocal(e));
+    renderQuad();
+  };
+  wrap.onmousedown = (e) => {
+    if (quadPoints.length < 4) return;
+    const idx = nearestHandle(toLocal(e));
+    if (idx !== null) { quadDragIndex = idx; e.preventDefault(); }
+  };
+  window.onmousemove = (e) => {
+    if (quadDragIndex === null) return;
+    quadPoints[quadDragIndex] = toLocal(e);
+    renderQuad();
+  };
+  window.onmouseup = () => { quadDragIndex = null; };
+  if (img.complete) init(); else img.onload = init;
+}
+
+function renderQuad() {
+  const poly = $("pickpolygon"), host = $("pickhandles"), ok = $("quadok"), msg = $("pickmsg");
+  if (!poly || !host) return;
+  poly.setAttribute("points", quadPoints.map((p) => p.join(",")).join(" "));
+  host.innerHTML = quadPoints.map((p) => `
+    <div style="position:absolute;left:${p[0] - 6}px;top:${p[1] - 6}px;width:12px;height:12px;
+         border-radius:50%;background:var(--accent);border:2px solid #fff;cursor:grab"></div>`).join("");
+  if (ok) ok.disabled = quadPoints.length !== 4;
+  if (msg) msg.textContent = quadPoints.length < 4
+    ? `${quadPoints.length}/4 titik` : "tarik titik untuk menyesuaikan";
+}
+
+function resetQuad() { quadPoints = []; renderQuad(); }
+
+async function saveQuad() {
+  if (quadPoints.length !== 4) return;
+  const img = $("pickimg"), scale = state.width / img.clientWidth;
+  const quad = quadPoints.map(([x, y]) => [Math.round(x * scale), Math.round(y * scale)]);
+  await api(`/api/projects/${current}/board-quad`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rect: pick }),
+    body: JSON.stringify({ quad }),
   });
-  pick = null; picking = false; refresh();
+  picking = false; refresh();
 }
 
-async function clearRect() {
-  await api(`/api/projects/${current}/board-rect`, {
+async function clearQuad() {
+  await api(`/api/projects/${current}/board-quad`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rect: null }),
+    body: JSON.stringify({ quad: null }),
+  });
+  quadPoints = []; refresh();
+}
+
+async function addLogoRect() {
+  if (!pick) return;
+  const rects = [...(state.logo_rects || []), pick];
+  await api(`/api/projects/${current}/logo-rects`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rects }),
   });
   pick = null; refresh();
+}
+
+async function removeLogoRect(index) {
+  const rects = (state.logo_rects || []).filter((_, i) => i !== index);
+  await api(`/api/projects/${current}/logo-rects`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ rects }),
+  });
+  refresh();
 }
 
 // A single ply is far too short to judge in blitz, so the player reviews a slice
@@ -555,7 +658,7 @@ async function run(what) {
   picking = false;
   await api(`/api/projects/${current}/${what}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: what === "render" ? JSON.stringify({ compare: true }) : "{}",
+    body: what === "render" ? JSON.stringify({ full_video: true }) : "{}",
   });
   refresh();
   clearInterval(timer);

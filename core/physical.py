@@ -10,6 +10,7 @@ bounded: an overlay time that is roughly right is worth more than a physical
 estimate that has locked onto the wrong event.
 """
 import logging
+import math
 import subprocess
 
 import numpy as np
@@ -25,13 +26,28 @@ REVIEW_SHIFT = 1.0    # under a second of disagreement is close enough; past it,
 MIN_SEPARATION = 1.0  # below this the window holds no visible change at all
 
 
-def sample_board(video, rect, fps=SAMPLE_FPS, width=SAMPLE_WIDTH):
-    """Grayscale frames of the board region only. `rect` is (x, y, w, h) in source pixels."""
-    x, y, w, h = rect
-    height = max(16, int(round(width * h / w)))
+def sample_board(video, quad, fps=SAMPLE_FPS, width=SAMPLE_WIDTH):
+    """Grayscale frames of the board region only, perspective-rectified.
+
+    `quad` is the board's 4 corners in source pixels, [[x,y] x4] ordered top-left,
+    top-right, bottom-right, bottom-left -- a camera angle rarely leaves the board
+    axis-aligned, so the selection follows its actual corners instead of a box.
+    """
+    (x0, y0), (x1, y1), (x2, y2), (x3, y3) = quad
+    left, top = min(x0, x1, x2, x3), min(y0, y1, y2, y3)
+    right, bottom = max(x0, x1, x2, x3), max(y0, y1, y2, y3)
+    crop_w, crop_h = max(1, right - left), max(1, bottom - top)
+    # ffmpeg's perspective filter wants source corners in top-left, top-right,
+    # bottom-left, bottom-right order -- swap the last two from our clockwise storage
+    persp = (f"x0={x0 - left}:y0={y0 - top}:x1={x1 - left}:y1={y1 - top}:"
+             f"x2={x3 - left}:y2={y3 - top}:x3={x2 - left}:y3={y2 - top}")
+    approx_w = max(1.0, (math.hypot(x1 - x0, y1 - y0) + math.hypot(x2 - x3, y2 - y3)) / 2)
+    approx_h = max(1.0, (math.hypot(x3 - x0, y3 - y0) + math.hypot(x2 - x1, y2 - y1)) / 2)
+    height = max(16, int(round(width * approx_h / approx_w)))
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-i", str(video), "-vf",
-         f"fps={fps},crop={w}:{h}:{x}:{y},scale={width}:{height},format=gray",
+         f"fps={fps},crop={crop_w}:{crop_h}:{left}:{top},perspective={persp},"
+         f"scale={width}:{height},format=gray",
          "-f", "rawvideo", "-"], capture_output=True, check=True).stdout
     size = width * height
     usable = len(raw) // size * size
@@ -61,10 +77,10 @@ def changepoint(frames, fps, low, high, guard=0.5):
     return (a + int(np.argmin(cost))) / fps, separation
 
 
-def refine(video, waypoints, rect, fps=SAMPLE_FPS, lookback=LOOKBACK,
+def refine(video, waypoints, quad, fps=SAMPLE_FPS, lookback=LOOKBACK,
            max_shift=MAX_SHIFT, frames=None):
     """Return waypoints re-timed against the physical board, with provenance on each."""
-    frames = sample_board(video, rect, fps) if frames is None else frames
+    frames = sample_board(video, quad, fps) if frames is None else frames
     duration = len(frames) / fps
     timed = [w for w in waypoints if w.get("timestamp") is not None]
     if not timed:

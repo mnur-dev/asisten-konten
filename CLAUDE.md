@@ -17,12 +17,20 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
 
 ## Alur kerja
 
-1. **Buat proyek** — path video di PC + teks PGN
+1. **Buat proyek** — link video (diunduh otomatis lewat yt-dlp) + teks PGN
 2. **Deteksi** — baca papan overlay digital di video, cocokkan tiap frame ke posisi PGN
-3. **Pilih papan fisik** — tarik kotak sekali per video (manual, lihat catatan di bawah)
+3. **Pilih papan fisik** — klik 4 sudut papan kayu (searah jarum jam) lalu tarik tiap
+   titik untuk mengikuti sudut kamera; bukan kotak tegak lurus. Manual, sekali per
+   video (lihat catatan di bawah). Disimpan sebagai `board_quad`, direktifikasi lewat
+   filter `perspective` ffmpeg sebelum dianalisis di `core/physical.py`.
 4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
-6. **Render** — `board.mp4` + `compare.mp4` (side-by-side untuk verifikasi)
+6. **Render** — `board.mp4` + `full-video.mp4` (video asli, papan overlay-nya ditimpa
+   video board kita di posisi yang sama; audio asli dibisukan, yang terdengar cuma klik
+   langkah kalau suara langkah aktif). Logo/watermark opsional dihapus lewat kotak yang
+   ditarik manual (`logo_rects`, boleh lebih dari satu) — dihaluskan dengan filter
+   `delogo` ffmpeg (interpolasi piksel sekitar, bukan AI; cocok untuk logo statis di
+   latar relatif polos).
 
 ## Struktur
 
@@ -30,14 +38,14 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
 app/main.py        FastAPI localhost, tanpa auth. Deteksi/render jalan di thread.
 app/ui/index.html  satu halaman, vanilla JS, tanpa build step
 core/pgn.py        parse PGN + signature okupansi 8x8 per ply
-core/video.py      helper ffmpeg (probe, sampling gray)
+core/video.py      helper ffmpeg (unduh via yt-dlp, probe, sampling gray)
 core/overlay.py    lokalisasi papan overlay + baca isi kotak
 core/align.py      DP monoton frame -> ply
 core/detect.py     orkestrasi deteksi overlay
 core/physical.py   re-timing dari papan kayu (changepoint)
-core/render.py     tema, eval bar, render concat-demuxer, side-by-side
+core/render.py     tema, eval bar, render concat-demuxer, overlay ke video asli
 core/pieces.py     rasterisasi SVG bidak lewat pycairo
-core/audio.py      sintesis suara langkah + mux
+core/audio.py      suara langkah dari klip di assets/sounds/ + mux
 core/evaluation.py sumber evaluasi (PGN [%eval] atau engine UCI)
 projects/<id>/     meta.json, input.pgn, timestamps.json, evals.json, *.mp4, log.txt
 ```
@@ -69,8 +77,9 @@ Karena itu re-timing papan fisik ada.
 **Lokalisasi papan fisik otomatis GAGAL.** Tiga pendekatan dicoba dan ketiganya
 menemukan pemain, bukan papan: peta perubahan persisten, rasio waktu-langkah vs
 waktu-acak, dan kriteria sparsity. Penyebabnya pemain berganti postur secara
-permanen sementara bidak kayu kontrasnya rendah. **Area papan ditarik manual di
-UI.** Jangan ulangi eksperimen ini tanpa ide yang benar-benar baru.
+permanen sementara bidak kayu kontrasnya rendah. **Area papan ditandai manual di
+UI** (4 sudut, bukan kotak tegak lurus — lihat alur kerja di atas). Jangan ulangi
+eksperimen ini tanpa ide yang benar-benar baru.
 
 **Overlay kadang menampilkan papan lain.** Di turnamen beregu grafisnya bergiliran
 antar papan. Sekitar 4 dari 18 frame kalibrasi tidak cocok. Karena itu ada verify
@@ -99,6 +108,16 @@ Evaluasi 69 ply memakan ~20 detik pada `movetime=0.25` dengan 3 thread.
 - **`-vsync` tidak dikenal** oleh ffmpeg versi ini; pakai `-fps_mode`.
 - Render lama memompa frame mentah ke pipe (336 GB untuk video 30 menit 1080p).
   Sekarang concat demuxer: satu PNG per ply, selesai dalam hitungan detik.
+- **`align.solve()` bisa "mulai" path-nya di ply mana pun pada frame 0, gratis.**
+  Selama papan overlay belum tampil di layar, cost ke SEMUA ply sama-sama di-cap
+  (`CAP=6`, tidak bawa informasi). Karena diam di satu ply tidak lebih murah dari
+  langsung mulai di ply berikutnya, DP-nya sering memilih ply 1 sejak frame 0 —
+  padahal belum ada bukti apa pun di sana — dan waktu langkah pertama jadi 0 detik
+  meski papan overlay-nya sendiri baru muncul jauh belakangan. `align.waypoints()`
+  sekarang cuma memakai frame pertama yang cost-nya di bawah `CAP` (benar-benar
+  informatif) untuk `timestamp`, bukan sekadar frame pertama di sepanjang segmen
+  yang ditempati path. Cuma ply pertama yang biasanya kena — ply lain selalu
+  "dijaga" oleh bukti kuat ply sebelumnya.
 
 ## Yang belum selesai
 

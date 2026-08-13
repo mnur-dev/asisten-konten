@@ -14,7 +14,7 @@ from core import audio, evaluation, physical, pieces
 from core.detect import detect
 from core.pgn import parse_pgn
 from core.render import (DEFAULT_THEME, THEMES, board_image, durations_from_waypoints,
-                         fit_size, render, side_by_side)
+                         fit_size, overlay_composite, render)
 from core.video import download, probe
 
 ROOT = Path(__file__).parents[1]
@@ -124,7 +124,8 @@ def create(data: NewProject):
         "plies_total": len(timeline["moves"]),
         "white": white,
         "black": black,
-        "board_rect": None,
+        "board_quad": None,
+        "logo_rects": [],
         "theme": DEFAULT_THEME,
         "piece_set": pieces.BUNDLED,
         "sound": True,
@@ -136,8 +137,23 @@ def create(data: NewProject):
         download(url, video)
         info = probe(video)
         logging.getLogger("core").info("Unduh video selesai")
-        update(path, status="new", width=info["width"], height=info["height"],
-               duration=round(info["duration"], 2))
+        update(path, width=info["width"], height=info["height"], duration=round(info["duration"], 2))
+
+        if scores := evaluation.from_pgn(data.pgn_text, len(timeline["moves"])):
+            (path / "evals.json").write_text(json.dumps(scores), encoding="utf-8")
+            logging.getLogger("core").info("Evaluasi diambil dari PGN (%d ply)", len(scores))
+            update(path, eval_bar=True)
+        elif engine := evaluation.find_engine():
+            logging.getLogger("core").info("Menghitung evaluasi lewat engine (%s)", engine)
+            scores = evaluation.from_engine(timeline, engine)
+            (path / "evals.json").write_text(json.dumps(scores), encoding="utf-8")
+            logging.getLogger("core").info("Evaluasi selesai (%d ply)", len(scores))
+            update(path, eval_bar=True)
+        else:
+            logging.getLogger("core").info(
+                "Tidak ada [%%eval] di PGN dan tidak ada engine ditemukan — lewati eval bar")
+
+        update(path, status="new")
 
     background(project_id, work)
     return {"id": project_id, "status": "downloading"}
@@ -167,6 +183,7 @@ def status(project_id: str):
     meta.setdefault("piece_set", pieces.BUNDLED)
     meta.setdefault("sound", True)
     meta.setdefault("eval_bar", False)
+    meta.setdefault("logo_rects", [])
     meta["engine"] = str(engine) if (engine := evaluation.find_engine()) else None
     meta["has_evaluations"] = (path / "evals.json").is_file()
     return meta
@@ -241,18 +258,73 @@ def start_detect(project_id: str):
     return {"status": "detecting"}
 
 
-@app.post("/api/projects/{project_id}/board-rect")
-def set_board_rect(project_id: str, rect: list | None = Body(None, embed=True)):
-    """Where the wooden board sits in the frame: [x, y, w, h] in source pixels."""
+@app.post("/api/projects/{project_id}/board-quad")
+def set_board_quad(project_id: str, quad: list | None = Body(None, embed=True)):
+    """Where the wooden board sits in the frame: its 4 corners, [[x,y] x4] in source
+    pixels, ordered top-left, top-right, bottom-right, bottom-left. Not axis-aligned --
+    a camera angle rarely leaves the board square to the frame, so the selection
+    follows its actual corners instead of a box."""
     path = folder(project_id)
-    if rect is not None:
-        if len(rect) != 4 or any(not isinstance(v, (int, float)) for v in rect):
-            raise HTTPException(400, "rect must be [x, y, w, h]")
-        rect = [int(round(v)) for v in rect]
-        if rect[2] < 40 or rect[3] < 20:
+    if quad is not None:
+        if len(quad) != 4 or any(len(p) != 2 for p in quad):
+            raise HTTPException(400, "quad must be 4 points: [[x,y], [x,y], [x,y], [x,y]]")
+        quad = [[int(round(v)) for v in p] for p in quad]
+        xs, ys = [p[0] for p in quad], [p[1] for p in quad]
+        if max(xs) - min(xs) < 40 or max(ys) - min(ys) < 20:
             raise HTTPException(400, "Selection is too small to be a board")
-    update(path, board_rect=rect)
-    return {"board_rect": rect}
+    update(path, board_quad=quad)
+    return {"board_quad": quad}
+
+
+def pad_square(rect, video_w, video_h, growth=0.16):
+    """Grow a detected (x, y, side) overlay square around its center, clamped to the
+    frame. The detector locks onto the 8x8 grid exactly, but broadcasts often draw
+    coordinate labels or a panel border just outside it, so a bare match leaves a
+    visible sliver of the original overlay peeking out around our composited board."""
+    x, y, side = rect
+    if not video_w or not video_h:
+        return rect
+    grown = int(round(side * (1 + growth)))
+    cx, cy = x + side / 2, y + side / 2
+    nx = max(0, min(int(round(cx - grown / 2)), video_w - grown))
+    ny = max(0, min(int(round(cy - grown / 2)), video_h - grown))
+    grown = max(1, min(grown, video_w - nx, video_h - ny))
+    return (nx, ny, grown)
+
+
+def clamp_rects(rects, video_w, video_h):
+    """Keep each [x, y, w, h] inside the frame -- independent x/w rounding can push
+    a corner-hugging box a pixel past the edge, which ffmpeg's delogo rejects outright.
+    delogo needs a 1px margin on every side: x and y must be >= 1, and x+w/y+h must be
+    strictly less than the frame size, not just within it (confirmed empirically --
+    the filter's own docs don't mention this margin)."""
+    if not rects or not video_w or not video_h:
+        return rects
+    clamped = []
+    for x, y, w, h in rects:
+        x, y = max(1, min(x, video_w - 2)), max(1, min(y, video_h - 2))
+        clamped.append([x, y, max(1, min(w, video_w - 1 - x)), max(1, min(h, video_h - 1 - y))])
+    return clamped
+
+
+@app.post("/api/projects/{project_id}/logo-rects")
+def set_logo_rects(project_id: str, rects: list = Body(..., embed=True)):
+    """Boxes to blot out of the broadcast (channel bugs, watermarks, ...):
+    each [x, y, w, h] in source pixels. Replaces the full list."""
+    path = folder(project_id)
+    meta = read_meta(path)
+    cleaned = []
+    for rect in rects:
+        if len(rect) != 4 or any(not isinstance(v, (int, float)) for v in rect):
+            raise HTTPException(400, "Each rect must be [x, y, w, h]")
+        rect = [int(round(v)) for v in rect]
+        cleaned.append(rect)
+    cleaned = clamp_rects(cleaned, meta.get("width"), meta.get("height"))
+    for rect in cleaned:
+        if rect[2] < 10 or rect[3] < 10:
+            raise HTTPException(400, "Logo box is too small")
+    update(path, logo_rects=cleaned)
+    return {"logo_rects": cleaned}
 
 
 @app.post("/api/projects/{project_id}/retime")
@@ -261,7 +333,7 @@ def start_retime(project_id: str):
     meta = read_meta(path)
     if not (path / "timestamps.json").is_file():
         raise HTTPException(400, "Run detection first")
-    if not meta.get("board_rect"):
+    if not meta.get("board_quad"):
         raise HTTPException(400, "Select the physical board first")
     update(path, status="retiming", error=None)
 
@@ -269,9 +341,9 @@ def start_retime(project_id: str):
         result = path / "timestamps.json"
         data = json.loads(result.read_text(encoding="utf-8"))
         data["waypoints"] = physical.refine(meta["video"], data["waypoints"],
-                                            tuple(meta["board_rect"]))
+                                            meta["board_quad"])
         data["source"] = "overlay+physical"
-        data["board_rect"] = meta["board_rect"]
+        data["board_quad"] = meta["board_quad"]
         result.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
         update(path, status="ready")
 
@@ -296,7 +368,7 @@ def save_waypoints(project_id: str, waypoints: list = Body(..., embed=True)):
 
 
 @app.post("/api/projects/{project_id}/render")
-def start_render(project_id: str, compare: bool = Body(True, embed=True)):
+def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
     path = folder(project_id)
     meta = read_meta(path)
     if not (path / "timestamps.json").is_file():
@@ -326,9 +398,14 @@ def start_render(project_id: str, compare: bool = Body(True, embed=True)):
             staged = path / ".board-audio.mp4"
             audio.mux(path / "board.mp4", track, staged)
             staged.replace(path / "board.mp4")
-        if compare:
-            logging.getLogger("core").info("Rendering comparison")
-            side_by_side(meta["video"], path / "board.mp4", path / "compare.mp4", width=800)
+        if full_video:
+            logo_rects = clamp_rects(meta.get("logo_rects"), meta.get("width"), meta.get("height"))
+            overlay_rect = pad_square(tuple(data["overlay_rect"]), meta.get("width"), meta.get("height"))
+            logging.getLogger("core").info(
+                "Menimpa board overlay di video asli%s",
+                f" ({len(logo_rects)} logo dihapus)" if logo_rects else "")
+            overlay_composite(meta["video"], path / "board.mp4", path / "full-video.mp4",
+                              overlay_rect, logo_rects=logo_rects)
         logging.getLogger("core").info("Render selesai")
         update(path, status="done")
 

@@ -53,7 +53,16 @@ def solve(cost: np.ndarray) -> np.ndarray:
 
 
 def waypoints(path, cost, fps) -> list[dict]:
-    """First timestamp of each ply on the path, with its match evidence."""
+    """First timestamp of each ply on the path, with its match evidence.
+
+    solve() can hold a ply from frame 0 with no real evidence for it yet: when
+    nothing informative has appeared, every ply's emission is equally capped, so
+    starting the path at a later ply immediately is free -- it dodges a JUMP penalty
+    it would otherwise pay once real evidence for that ply does appear. That makes
+    `path`'s very first frames unreliable as "when the ply began"; only a frame
+    below CAP actually carries information, so the first timestamp must come from
+    those, not from wherever the path happens to already be sitting.
+    """
     plies = cost.shape[1]
     result = []
     for ply in range(1, plies):
@@ -63,7 +72,11 @@ def waypoints(path, cost, fps) -> list[dict]:
             continue
         raw = cost[frames, ply]
         best = int(frames[int(raw.argmin())])
-        first = int(frames[0])
+        informative = frames[raw < CAP]
+        if not len(informative):
+            result.append({"ply": ply, "timestamp": None, "cost": None, "observed": False})
+            continue
+        first = int(informative[0])
         result.append({
             "ply": ply,
             "timestamp": round(first / fps, 3),

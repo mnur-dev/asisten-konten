@@ -17,13 +17,13 @@ GLYPHS = {"P": "♙", "N": "♘", "B": "♗", "R": "♖", "Q": "♕", "K": "♔"
 
 # light, dark, highlight-on-light, highlight-on-dark, page background
 THEMES = {
-    "green":    ("#eeeed2", "#769656", "#f6f669", "#baca2b", "#262421"),
+    "orange":   ("#eeeed2", "#d68a3c", "#f6f669", "#f0b25b", "#262421"),
     "chesscom": ("#ebecd0", "#739552", "#f7f769", "#b9ca43", "#302e2b"),
     "blue":     ("#dee3e6", "#8ca2ad", "#cdd26a", "#aaa23b", "#22272b"),
     "wood":     ("#f0d9b5", "#b58863", "#f7ec74", "#dac431", "#2b2622"),
     "slate":    ("#e6e9ee", "#4a5568", "#e9c46a", "#b98a2f", "#171a20"),
 }
-DEFAULT_THEME = "green"
+DEFAULT_THEME = "orange"
 
 
 def theme_colours(name):
@@ -260,17 +260,32 @@ def render(timeline, plan, output, size=(1920, 1080), fps=30, encoder=None,
     return output
 
 
-def side_by_side(source, board_video, output, start=0.0, width=800, encoder=None):
-    """One frame showing the broadcast and the generated board together."""
+def overlay_composite(source, board_video, output, rect, logo_rects=None, encoder=None):
+    """Paste the generated board over the broadcast, in the spot its digital overlay
+    occupies, so the rendered board replaces the overlay in the original footage.
+
+    `rect` is (x, y, side) in source-video pixels, as detected by core.overlay.
+    `logo_rects`, if given, is a list of (x, y, w, h) boxes to blot out first, via
+    ffmpeg's `delogo` (interpolates each box from its surrounding pixels — no AI).
+    The broadcast's own audio is dropped; only board_video's track (the move clicks,
+    if enabled) survives, since board_video has no audio stream at all when they're off.
+    """
     encoder = encoder or pick_encoder()
-    quality = ["-cq", "28"] if encoder == "h264_nvenc" else ["-crf", "26", "-preset", "veryfast"]
-    command = ["ffmpeg", "-y", "-loglevel", "error", "-ss", str(start), "-i", str(source),
-               "-i", str(board_video), "-filter_complex",
-               f"[0:v]scale={width}:-2,setsar=1[a];[1:v]scale={width}:-2,setsar=1[b];"
-               "[a][b]hstack=inputs=2[v]",
-               "-map", "[v]", "-c:v", encoder, *quality, "-pix_fmt", "yuv420p",
-               "-shortest", str(output)]
+    quality = ["-cq", "23"] if encoder == "h264_nvenc" else ["-crf", "20", "-preset", "veryfast"]
+    x, y, side = rect
+    source_label = "0:v"
+    stages = []
+    if logo_rects:
+        chain = ",".join(f"delogo=x={lx}:y={ly}:w={lw}:h={lh}:show=0" for lx, ly, lw, lh in logo_rects)
+        stages.append(f"[0:v]{chain}[clean]")
+        source_label = "clean"
+    stages.append(f"[1:v]scale={side}:{side}[b]")
+    stages.append(f"[{source_label}][b]overlay={x}:{y}:shortest=1[v]")
+    command = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source), "-i", str(board_video),
+               "-filter_complex", ";".join(stages),
+               "-map", "[v]", "-map", "1:a?", "-c:v", encoder, *quality, "-pix_fmt", "yuv420p",
+               "-c:a", "aac", "-b:a", "192k", str(output)]
     result = subprocess.run(command, capture_output=True, text=True)
     if result.returncode:
-        raise RuntimeError(f"Comparison render failed: {result.stderr.strip()[-800:]}")
+        raise RuntimeError(f"Full-video render failed: {result.stderr.strip()[-800:]}")
     return Path(output)
