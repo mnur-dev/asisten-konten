@@ -1,20 +1,22 @@
 """Local web app: one FastAPI process on 127.0.0.1, no auth, no queue, no workers."""
 import json
 import logging
+import shutil
 import subprocess
 import threading
 import uuid
 from pathlib import Path
 
-from fastapi import Body, FastAPI, HTTPException
+from fastapi import Body, FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, Response
+from PIL import Image
 from pydantic import BaseModel
 
 from core import audio, evaluation, physical, pieces
 from core.detect import detect
 from core.pgn import parse_pgn
 from core.render import (DEFAULT_THEME, THEMES, board_image, durations_from_waypoints,
-                         fit_size, overlay_composite, render)
+                         fit_size, furniture_layer, overlay_composite, render)
 from core.video import download, probe
 
 ROOT = Path(__file__).parents[1]
@@ -184,9 +186,23 @@ def status(project_id: str):
     meta.setdefault("sound", True)
     meta.setdefault("eval_bar", False)
     meta.setdefault("logo_rects", [])
+    meta.setdefault("blur_rects", [])
+    meta.setdefault("paste_rect", None)
+    meta.setdefault("brand_file", None)
+    meta.setdefault("brand_rect", None)
+    meta.setdefault("name_rects", {"white": None, "black": None})
     meta["engine"] = str(engine) if (engine := evaluation.find_engine()) else None
     meta["has_evaluations"] = (path / "evals.json").is_file()
     return meta
+
+
+@app.delete("/api/projects/{project_id}", status_code=204)
+def delete(project_id: str):
+    path = folder(project_id)
+    if project_id in _running:
+        raise HTTPException(409, "This project is already busy")
+    shutil.rmtree(path)
+    return Response(status_code=204)
 
 
 class Look(BaseModel):
@@ -307,24 +323,105 @@ def clamp_rects(rects, video_w, video_h):
     return clamped
 
 
+def clean_rects(rects, meta, label="Box", minimum=10):
+    """Validate, round and clamp a list of [x, y, w, h] against the frame."""
+    cleaned = []
+    for rect in rects:
+        if len(rect) != 4 or any(not isinstance(v, (int, float)) for v in rect):
+            raise HTTPException(400, "Each rect must be [x, y, w, h]")
+        cleaned.append([int(round(v)) for v in rect])
+    cleaned = clamp_rects(cleaned, meta.get("width"), meta.get("height"))
+    for rect in cleaned:
+        if rect[2] < minimum or rect[3] < minimum:
+            raise HTTPException(400, f"{label} is too small")
+    return cleaned
+
+
 @app.post("/api/projects/{project_id}/logo-rects")
 def set_logo_rects(project_id: str, rects: list = Body(..., embed=True)):
     """Boxes to blot out of the broadcast (channel bugs, watermarks, ...):
     each [x, y, w, h] in source pixels. Replaces the full list."""
     path = folder(project_id)
-    meta = read_meta(path)
-    cleaned = []
-    for rect in rects:
-        if len(rect) != 4 or any(not isinstance(v, (int, float)) for v in rect):
-            raise HTTPException(400, "Each rect must be [x, y, w, h]")
-        rect = [int(round(v)) for v in rect]
-        cleaned.append(rect)
-    cleaned = clamp_rects(cleaned, meta.get("width"), meta.get("height"))
-    for rect in cleaned:
-        if rect[2] < 10 or rect[3] < 10:
-            raise HTTPException(400, "Logo box is too small")
+    cleaned = clean_rects(rects, read_meta(path), "Logo box")
     update(path, logo_rects=cleaned)
     return {"logo_rects": cleaned}
+
+
+@app.post("/api/projects/{project_id}/blur-rects")
+def set_blur_rects(project_id: str, rects: list = Body(..., embed=True)):
+    """Boxes to blur rather than interpolate away. Interpolation (delogo) only looks
+    right on a small static mark against a plain backdrop; anything that repaints every
+    frame -- a broadcast's own eval bar, a ticker -- smears instead, so it gets blurred."""
+    path = folder(project_id)
+    cleaned = clean_rects(rects, read_meta(path), "Blur box")
+    update(path, blur_rects=cleaned)
+    return {"blur_rects": cleaned}
+
+
+@app.post("/api/projects/{project_id}/paste-rect")
+def set_paste_rect(project_id: str, rect: list | None = Body(None, embed=True)):
+    """Where OUR rendered board gets pasted onto the broadcast, [x, y, w, h]. Null
+    falls back to the detected overlay square. Distinct from `board_quad`, which is the
+    wooden board being watched for timing -- this one is purely about output framing."""
+    path = folder(project_id)
+    if rect is not None:
+        rect = clean_rects([rect], read_meta(path), "Board box", minimum=40)[0]
+    update(path, paste_rect=rect)
+    return {"paste_rect": rect}
+
+
+@app.post("/api/projects/{project_id}/name-rects")
+def set_name_rects(project_id: str, white: list | None = Body(None, embed=True),
+                   black: list | None = Body(None, embed=True)):
+    """Nameplate boxes for the two players, each [x, y, w, h] or null to drop it."""
+    path = folder(project_id)
+    meta = read_meta(path)
+    plates = dict(meta.get("name_rects") or {})
+    for side, rect in (("white", white), ("black", black)):
+        plates[side] = clean_rects([rect], meta, "Nameplate")[0] if rect else None
+    update(path, name_rects=plates)
+    return {"name_rects": plates}
+
+
+@app.post("/api/projects/{project_id}/brand-rect")
+def set_brand_rect(project_id: str, rect: list | None = Body(None, embed=True)):
+    """Where the uploaded logo image is drawn, [x, y, w, h]; null removes it."""
+    path = folder(project_id)
+    if rect is not None:
+        rect = clean_rects([rect], read_meta(path), "Logo box")[0]
+    update(path, brand_rect=rect)
+    return {"brand_rect": rect}
+
+
+@app.post("/api/projects/{project_id}/brand")
+async def upload_brand(project_id: str, file: UploadFile = File(...)):
+    """Store the user's own logo image alongside the project. PNG keeps transparency,
+    which is what makes a logo sit on the footage instead of in a box."""
+    path = folder(project_id)
+    suffix = Path(file.filename or "").suffix.lower()
+    if suffix not in (".png", ".jpg", ".jpeg", ".webp"):
+        raise HTTPException(400, "Logo must be a .png, .jpg or .webp image")
+    target = path / f"brand{suffix}"
+    for stale in path.glob("brand.*"):
+        stale.unlink()
+    target.write_bytes(await file.read())
+    try:
+        with Image.open(target) as art:
+            art.verify()
+    except Exception:
+        target.unlink(missing_ok=True)
+        raise HTTPException(400, "That file is not a readable image")
+    update(path, brand_file=target.name)
+    return {"brand_file": target.name}
+
+
+@app.delete("/api/projects/{project_id}/brand", status_code=204)
+def delete_brand(project_id: str):
+    path = folder(project_id)
+    for stale in path.glob("brand.*"):
+        stale.unlink()
+    update(path, brand_file=None, brand_rect=None)
+    return Response(status_code=204)
 
 
 @app.post("/api/projects/{project_id}/retime")
@@ -399,13 +496,35 @@ def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
             audio.mux(path / "board.mp4", track, staged)
             staged.replace(path / "board.mp4")
         if full_video:
-            logo_rects = clamp_rects(meta.get("logo_rects"), meta.get("width"), meta.get("height"))
-            overlay_rect = pad_square(tuple(data["overlay_rect"]), meta.get("width"), meta.get("height"))
+            size = (meta.get("width"), meta.get("height"))
+            logo_rects = clamp_rects(meta.get("logo_rects"), *size)
+            blur_rects = clamp_rects(meta.get("blur_rects"), *size)
+            if paste := meta.get("paste_rect"):
+                paste_rect = tuple(paste)
+            else:
+                x, y, side = pad_square(tuple(data["overlay_rect"]), *size)
+                paste_rect = (x, y, side, side)
+
+            furniture = None
+            plates = meta.get("name_rects") or {}
+            nameplates = [(meta.get(side), plates.get(side))
+                          for side in ("white", "black") if plates.get(side)]
+            brand = path / meta["brand_file"] if meta.get("brand_file") else None
+            if nameplates or (brand and meta.get("brand_rect")):
+                furniture = path / ".furniture.png"
+                furniture_layer(size, brand=brand if meta.get("brand_rect") else None,
+                                brand_rect=meta.get("brand_rect"), nameplates=nameplates,
+                                theme=meta.get("theme", DEFAULT_THEME)).save(furniture)
+
+            extras = [f"{len(logo_rects)} logo dihapus" if logo_rects else "",
+                      f"{len(blur_rects)} area diblur" if blur_rects else "",
+                      "logo + nama pemain" if furniture else ""]
+            detail = ", ".join(x for x in extras if x)
             logging.getLogger("core").info(
-                "Menimpa board overlay di video asli%s",
-                f" ({len(logo_rects)} logo dihapus)" if logo_rects else "")
+                "Menimpa board overlay di video asli%s", f" ({detail})" if detail else "")
             overlay_composite(meta["video"], path / "board.mp4", path / "full-video.mp4",
-                              overlay_rect, logo_rects=logo_rects)
+                              paste_rect, logo_rects=logo_rects, blur_rects=blur_rects,
+                              furniture=furniture)
         logging.getLogger("core").info("Render selesai")
         update(path, status="done")
 

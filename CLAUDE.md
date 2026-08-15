@@ -25,12 +25,33 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    filter `perspective` ffmpeg sebelum dianalisis di `core/physical.py`.
 4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
-6. **Render** — `board.mp4` + `full-video.mp4` (video asli, papan overlay-nya ditimpa
-   video board kita di posisi yang sama; audio asli dibisukan, yang terdengar cuma klik
-   langkah kalau suara langkah aktif). Logo/watermark opsional dihapus lewat kotak yang
-   ditarik manual (`logo_rects`, boleh lebih dari satu) — dihaluskan dengan filter
-   `delogo` ffmpeg (interpolasi piksel sekitar, bukan AI; cocok untuk logo statis di
-   latar relatif polos).
+6. **Tata letak** (opsional) — semua penempatan di `full-video.mp4` ditandai manual
+   dengan menarik kotak di atas satu frame contoh. Panel "Tata letak" di UI punya
+   beberapa layer, semuanya memakai picker yang sama:
+   - `paste_rect` — posisi papan hasil render. Kosong = pakai posisi papan overlay
+     hasil deteksi. Papan menjaga rasio aslinya dan diletakkan di tengah kotak;
+     jangan diregangkan, sebab dengan eval bar aktif `board.mp4` lebih lebar
+     daripada tinggi.
+   - `logo_rects` — dihapus dengan `delogo` (interpolasi piksel sekitar, bukan AI)
+   - `blur_rects` — disamarkan dengan `boxblur`
+   - `brand_file` + `brand_rect` — logo milik pengguna yang diunggah, ditempel
+   - `name_rects` — papan nama pemain putih/hitam, teks dari PGN
+7. **Render** — `board.mp4` + `full-video.mp4` (video asli, papan overlay-nya ditimpa
+   video board kita; audio asli dibisukan, yang terdengar cuma klik langkah kalau
+   suara langkah aktif).
+
+**delogo vs blur — jangan tertukar.** `delogo` menebak isi kotak dari piksel di
+sekelilingnya, jadi hanya meyakinkan untuk tanda **diam** di latar relatif polos.
+Elemen yang berubah tiap frame (eval bar bawaan siaran, jam, ticker) akan jadi noda
+bergerak kalau di-`delogo`; itu yang dipakai `blur_rects`. Sudah diverifikasi di frame
+nyata: delogo memang bekerja dengan benar untuk logo statis.
+
+**Logo dan nama pemain digambar di PIL, bukan `drawtext`.** `core/render.furniture_layer()`
+membuat satu PNG RGBA seukuran frame berisi logo + papan nama, lalu ditimpa sekali
+sebagai input ffmpeg terakhir. Alasannya: `drawtext` butuh path font di dalam string
+filter, dan di Windows path itu mengandung titik dua drive plus backslash yang harus
+lolos dua lapis escaping — rapuh dan sulit dilacak kalau salah. PIL juga menyamakan
+kendali tipografinya dengan papan yang sudah digambar PIL.
 
 ## Struktur
 
@@ -43,7 +64,8 @@ core/overlay.py    lokalisasi papan overlay + baca isi kotak
 core/align.py      DP monoton frame -> ply
 core/detect.py     orkestrasi deteksi overlay
 core/physical.py   re-timing dari papan kayu (changepoint)
-core/render.py     tema, eval bar, render concat-demuxer, overlay ke video asli
+core/render.py     tema, eval bar, render concat-demuxer, overlay ke video asli,
+                   furniture_layer (logo + nama pemain sebagai PNG RGBA)
 core/pieces.py     rasterisasi SVG bidak lewat pycairo
 core/audio.py      suara langkah dari klip di assets/sounds/ + mux
 core/evaluation.py sumber evaluasi (PGN [%eval] atau engine UCI)

@@ -3,6 +3,7 @@
 One PNG per ply plus FFmpeg's concat demuxer, so encoding cost scales with the
 number of moves rather than the number of output frames.
 """
+import logging
 import os
 import shutil
 import subprocess
@@ -12,18 +13,23 @@ from pathlib import Path
 import chess
 from PIL import Image, ImageDraw, ImageFont
 
+log = logging.getLogger(__name__)
+
 GLYPHS = {"P": "♙", "N": "♘", "B": "♗", "R": "♖", "Q": "♕", "K": "♔",
           "p": "♟", "n": "♞", "b": "♝", "r": "♜", "q": "♛", "k": "♚"}
 
 # light, dark, highlight-on-light, highlight-on-dark, page background
 THEMES = {
-    "orange":   ("#eeeed2", "#d68a3c", "#f6f669", "#f0b25b", "#262421"),
+    "orange":   ("#ebecd0", "#e98839", "#cfc751", "#c48a20", "#262421"),
     "chesscom": ("#ebecd0", "#739552", "#f7f769", "#b9ca43", "#302e2b"),
     "blue":     ("#dee3e6", "#8ca2ad", "#cdd26a", "#aaa23b", "#22272b"),
     "wood":     ("#f0d9b5", "#b58863", "#f7ec74", "#dac431", "#2b2622"),
     "slate":    ("#e6e9ee", "#4a5568", "#e9c46a", "#b98a2f", "#171a20"),
 }
 DEFAULT_THEME = "orange"
+
+# seconds the board stays frozen on its final position after the last move
+HOLD_AFTER_BOARD = 60.0
 
 
 def theme_colours(name):
@@ -76,6 +82,74 @@ def fitted_font(draw, text, max_width, ceiling):
         if draw.textlength(text, font=font) <= max_width:
             return font
     return ImageFont.truetype(path, 7)
+
+
+def find_text_font():
+    """A prose font for player names -- find_font() returns a symbol face, which is
+    built for chess glyphs and renders names poorly."""
+    candidates = []
+    if windir := os.environ.get("WINDIR"):
+        fonts = Path(windir) / "Fonts"
+        candidates += [fonts / "segoeuib.ttf", fonts / "segoeui.ttf",
+                       fonts / "arialbd.ttf", fonts / "arial.ttf"]
+    candidates += [Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"),
+                   Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
+                   Path("/System/Library/Fonts/Helvetica.ttc")]
+    for font in candidates:
+        if font.is_file():
+            return font
+    return find_font()
+
+
+def boxed_font(draw, text, box_w, box_h, font_path):
+    """Largest size at which `text` fits the box in BOTH axes. fitted_font() only
+    constrains width, which is fine for the eval bar's short labels but lets a long
+    player name overflow a short nameplate vertically."""
+    path = str(font_path)
+    for size in range(max(8, int(box_h)), 7, -1):
+        font = ImageFont.truetype(path, size)
+        left, top, right, bottom = draw.textbbox((0, 0), text, font=font)
+        if right - left <= box_w and bottom - top <= box_h:
+            return font
+    return ImageFont.truetype(path, 8)
+
+
+def furniture_layer(size, brand=None, brand_rect=None, nameplates=None,
+                    theme=DEFAULT_THEME, opacity=0.72):
+    """A full-frame RGBA image holding the channel logo and the player nameplates.
+
+    Composited over the broadcast as a single ffmpeg input. Drawing it in PIL rather
+    than with ffmpeg's `drawtext` keeps the typography under the same control as the
+    board itself and sidesteps drawtext's filter-string escaping, which on Windows has
+    to survive a font path containing both a drive colon and backslashes.
+
+    `nameplates` is [(text, (x, y, w, h)), ...]; `brand` a path to a logo image, drawn
+    into `brand_rect` with its aspect ratio preserved and centred.
+    """
+    light, _, _, _, background = theme_colours(theme)
+    layer = Image.new("RGBA", size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+
+    if brand and brand_rect:
+        x, y, w, h = brand_rect
+        art = Image.open(brand).convert("RGBA")
+        scale = min(w / art.width, h / art.height)
+        art = art.resize((max(1, int(art.width * scale)), max(1, int(art.height * scale))),
+                         Image.LANCZOS)
+        layer.alpha_composite(art, (int(x + (w - art.width) / 2), int(y + (h - art.height) / 2)))
+
+    font_path = find_text_font()
+    plate = tuple(int(c, 16) for c in (background[1:3], background[3:5], background[5:7]))
+    for text, (x, y, w, h) in (nameplates or []):
+        if not text:
+            continue
+        pad = max(4, int(h * 0.16))
+        radius = max(3, int(h * 0.18))
+        draw.rounded_rectangle((x, y, x + w, y + h), radius=radius,
+                               fill=(*plate, int(255 * opacity)))
+        font = boxed_font(draw, text, w - 2 * pad, h - 2 * pad, font_path)
+        draw.text((x + w / 2, y + h / 2), text, font=font, anchor="mm", fill=light)
+    return layer
 
 
 def draw_eval_bar(draw, box, share, text=""):
@@ -205,6 +279,26 @@ def pick_encoder():
     return "h264_nvenc" if probe.returncode == 0 else "libx264"
 
 
+def _run_ffmpeg(build_command, encoder, label):
+    """Run an ffmpeg encode, falling back to libx264 if a hardware encoder fails.
+
+    h264_nvenc can pass pick_encoder()'s single-frame probe yet still die silently
+    partway through a long real encode (GPU driver TDR, VRAM exhaustion) -- with no
+    stderr at all, just a non-zero exit code. Losing a 20-minute render to that is
+    worse than the encode being a bit slower, so retry once on CPU before giving up.
+    """
+    result = subprocess.run(build_command(encoder), capture_output=True, text=True)
+    if result.returncode and encoder != "libx264":
+        log.warning("%s: %s failed (%s), retrying with libx264", label, encoder,
+                    result.stderr.strip()[-300:] or "no error output from ffmpeg")
+        encoder = "libx264"
+        result = subprocess.run(build_command(encoder), capture_output=True, text=True)
+    if result.returncode:
+        detail = result.stderr.strip()[-800:] or "ffmpeg exited with no error output"
+        raise RuntimeError(f"{label}: {detail}")
+    return encoder
+
+
 def durations_from_waypoints(waypoints, tail=3.0):
     """[(ply, seconds)] — ply n is on screen until ply n+1 lands."""
     times = [w["timestamp"] for w in waypoints if w["timestamp"] is not None]
@@ -251,41 +345,68 @@ def render(timeline, plan, output, size=(1920, 1080), fps=30, encoder=None,
         entries.append(f"file '{(directory / f'{index - 1:05d}.png').as_posix()}'")
         listing = directory / "frames.txt"
         listing.write_text("\n".join(entries) + "\n", encoding="utf-8")
-        command = ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
-                   "-i", str(listing), "-fps_mode", "cfr", "-r", str(fps),
-                   "-c:v", encoder, "-pix_fmt", "yuv420p", str(output)]
-        result = subprocess.run(command, capture_output=True, text=True)
-        if result.returncode:
-            raise RuntimeError(f"FFmpeg failed with {encoder}: {result.stderr.strip()[-800:]}")
+        def build_command(enc):
+            return ["ffmpeg", "-y", "-loglevel", "error", "-f", "concat", "-safe", "0",
+                    "-i", str(listing), "-fps_mode", "cfr", "-r", str(fps),
+                    "-c:v", enc, "-pix_fmt", "yuv420p", str(output)]
+        _run_ffmpeg(build_command, encoder, "FFmpeg failed")
     return output
 
 
-def overlay_composite(source, board_video, output, rect, logo_rects=None, encoder=None):
+def overlay_composite(source, board_video, output, rect, logo_rects=None, encoder=None,
+                      blur_rects=None, furniture=None, hold=HOLD_AFTER_BOARD):
     """Paste the generated board over the broadcast, in the spot its digital overlay
     occupies, so the rendered board replaces the overlay in the original footage.
 
-    `rect` is (x, y, side) in source-video pixels, as detected by core.overlay.
-    `logo_rects`, if given, is a list of (x, y, w, h) boxes to blot out first, via
-    ffmpeg's `delogo` (interpolates each box from its surrounding pixels — no AI).
+    `rect` is (x, y, w, h) in source-video pixels: either the detected overlay square
+    or a box the user drew. The board keeps its own aspect ratio and is centred in the
+    box -- with the eval bar on, board.mp4 is wider than it is tall, so stretching it
+    to a square box would visibly squash the pieces.
+    `logo_rects` is a list of (x, y, w, h) boxes to blot out via ffmpeg's `delogo`
+    (interpolates each box from its surrounding pixels — no AI); `blur_rects` the same
+    but blurred, for areas that keep changing and so smear under interpolation.
+    `furniture`, if given, is a full-frame RGBA PNG (see furniture_layer) laid on last,
+    so the channel logo and nameplates sit above everything else.
+    `hold` keeps the board's final position on screen for that many extra seconds.
+    The overlay ends with the shorter input, and board.mp4 runs out well before the
+    broadcast does (the game finishes; the stream keeps rolling through the handshake
+    and interview), so without this the composite would stop dead on the last move.
+    Freezing the final position is what a viewer expects there -- the board vanishing
+    would read as the video breaking. Capped by the broadcast's own length.
     The broadcast's own audio is dropped; only board_video's track (the move clicks,
     if enabled) survives, since board_video has no audio stream at all when they're off.
     """
     encoder = encoder or pick_encoder()
-    quality = ["-cq", "23"] if encoder == "h264_nvenc" else ["-crf", "20", "-preset", "veryfast"]
-    x, y, side = rect
-    source_label = "0:v"
+    x, y, width, height = rect
+    label = "0:v"
     stages = []
     if logo_rects:
         chain = ",".join(f"delogo=x={lx}:y={ly}:w={lw}:h={lh}:show=0" for lx, ly, lw, lh in logo_rects)
-        stages.append(f"[0:v]{chain}[clean]")
-        source_label = "clean"
-    stages.append(f"[1:v]scale={side}:{side}[b]")
-    stages.append(f"[{source_label}][b]overlay={x}:{y}:shortest=1[v]")
-    command = ["ffmpeg", "-y", "-loglevel", "error", "-i", str(source), "-i", str(board_video),
-               "-filter_complex", ";".join(stages),
-               "-map", "[v]", "-map", "1:a?", "-c:v", encoder, *quality, "-pix_fmt", "yuv420p",
-               "-c:a", "aac", "-b:a", "192k", str(output)]
-    result = subprocess.run(command, capture_output=True, text=True)
-    if result.returncode:
-        raise RuntimeError(f"Full-video render failed: {result.stderr.strip()[-800:]}")
+        stages.append(f"[{label}]{chain}[clean]")
+        label = "clean"
+    for index, (bx, by, bw, bh) in enumerate(blur_rects or []):
+        # ffmpeg cannot blur a sub-region in place: cut the patch out, blur it, put it back
+        radius = max(2, min(bw, bh) // 6)
+        stages.append(f"[{label}]split=2[keep{index}][cut{index}]")
+        stages.append(f"[cut{index}]crop={bw}:{bh}:{bx}:{by},boxblur={radius}:2[soft{index}]")
+        stages.append(f"[keep{index}][soft{index}]overlay={bx}:{by}[blur{index}]")
+        label = f"blur{index}"
+    freeze = f",tpad=stop_mode=clone:stop_duration={hold:g}" if hold else ""
+    stages.append(f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease{freeze}[b]")
+    board_out = "board" if furniture else "v"
+    stages.append(f"[{label}][b]overlay="
+                  f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
+    if furniture:
+        stages.append(f"[{board_out}][2:v]overlay=0:0[v]")
+
+    def build_command(enc):
+        quality = ["-cq", "23"] if enc == "h264_nvenc" else ["-crf", "20", "-preset", "veryfast"]
+        inputs = ["-i", str(source), "-i", str(board_video)]
+        if furniture:
+            inputs += ["-i", str(furniture)]
+        return ["ffmpeg", "-y", "-loglevel", "error", *inputs,
+                "-filter_complex", ";".join(stages),
+                "-map", "[v]", "-map", "1:a?", "-c:v", enc, *quality, "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k", str(output)]
+    _run_ffmpeg(build_command, encoder, "Full-video render failed")
     return Path(output)

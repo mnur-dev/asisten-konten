@@ -1,0 +1,19 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s http://127.0.0.1:8420/api/projects/0c7b7039bb68)",
+      "Bash(ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=p=0 \"d:/Website/asisten-konten/projects/0c7b7039bb68/source.mp4\")",
+      "Bash(powershell -Command \"Get-Process -Id \\(Get-NetTCPConnection -LocalPort 8420 -State Listen -ErrorAction SilentlyContinue\\).OwningProcess | Select-Object Id,StartTime\")",
+      "Bash(ffmpeg -y -loglevel error -f lavfi -i \"color=size=1920x1080:rate=1:duration=1:color=blue\" -vf \"delogo=x=2:y=985:w=567:h=95:show=0\" -frames:v 1 -f null -)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(ffmpeg -y -loglevel error -f lavfi -i \"color=size=1920x1080:rate=1:duration=1:color=blue\" -vf \"delogo=x=2:y=985:w=567:h=94:show=0\" -frames:v 1 -f null -)",
+      "Bash(./.venv/Scripts/python.exe -c ' *)",
+      "Bash(ffmpeg -y -loglevel error -f lavfi -i \"color=size=1920x1080:rate=1:duration=1:color=blue\" -vf \"delogo=x=0:y=0:w=179:h=139:show=0,delogo=x=2:y=985:w=567:h=94:show=0,delogo=x=716:y=1013:w=369:h=66:show=0,delogo=x=1309:y=992:w=593:h=87:show=0,delogo=x=1645:y=10:w=274:h=94:show=0\" -frames:v 1 -f null -)",
+      "Bash(ffmpeg -hide_banner -h filter=delogo)",
+      "Bash(ffmpeg -y -loglevel error -f lavfi -i \"color=size=1920x1080:rate=1:duration=1:color=blue\" -vf \"delogo=x=1:y=1:w=179:h=139:show=0,delogo=x=2:y=985:w=567:h=94:show=0,delogo=x=716:y=1013:w=369:h=66:show=0,delogo=x=1309:y=992:w=593:h=87:show=0,delogo=x=1645:y=10:w=274:h=94:show=0\" -frames:v 1 -f null -)",
+      "Bash(powershell -Command \"Stop-Process -Id 10068 -Force\")",
+      "Bash(cd \"d:/Website/asisten-konten\" && echo \"--- project settings.json ---\" && cat .claude/settings.json 2>/dev/null || echo \"\\(none\\)\" *)",
+      "Read(//c/Users/Emeni/.claude/**)"
+    ]
+  }
+}

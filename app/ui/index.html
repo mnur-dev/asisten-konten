@@ -89,8 +89,22 @@ async function loadList() {
   const { projects } = await api("/api/projects");
   $("list").innerHTML = projects.map((p) => `
     <div class="proj ${p.id === current ? "on" : ""}" onclick="open_('${p.id}')">
-      <b>${escape_(p.name || p.id)}</b><i>${p.status}</i></div>`).join("")
+      <b>${escape_(p.name || p.id)}</b><i>${p.status}</i>
+      <button title="Hapus proyek" onclick="event.stopPropagation();deleteProject('${p.id}','${escape_(p.name || p.id).replace(/'/g, "\\'")}')"
+        style="float:right;padding:1px 7px;font-size:12px">×</button></div>`).join("")
     || `<p class="hint">Belum ada proyek.</p>`;
+}
+
+async function deleteProject(id, name) {
+  if (!confirm(`Hapus proyek "${name}"? Semua video dan datanya akan hilang permanen.`)) return;
+  try {
+    await api(`/api/projects/${id}`, { method: "DELETE" });
+    if (id === current) {
+      current = null; selected = null; clearInterval(timer); clearInterval(rafId);
+      $("panel").innerHTML = "";
+    }
+    await loadList();
+  } catch (e) { alert(e.message); }
 }
 
 function escape_(s) { return String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -158,13 +172,16 @@ function draw() {
             ${s.waypoints ? "Deteksi ulang" : "Deteksi"}</button>
           <button ${busy ? "disabled" : ""} onclick="togglePicker()">
             ${s.board_quad ? "Ubah papan fisik" : "Pilih papan fisik"}</button>
-          <button ${busy ? "disabled" : ""} onclick="toggleLogoPicker()">
-            ${(s.logo_rects || []).length ? `Hapus logo (${s.logo_rects.length})` : "Hapus logo"}</button>
+          <button ${busy ? "disabled" : ""} onclick="toggleLayout()"
+                  title="Posisi papan render, hapus logo, blur, logo sendiri, nama pemain">
+            Tata letak</button>
           <button ${busy || !s.waypoints || !s.board_quad ? "disabled" : ""}
                   onclick="run('retime')" title="Geser waktu tiap ply mengikuti papan kayu">
             Ikuti papan fisik</button>
           <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="run('render')">
             Render video</button>
+          <button ${busy ? "disabled" : ""} title="Hapus proyek ini"
+                  onclick="deleteProject('${current}','${escape_(s.name).replace(/'/g, "\\'")}')">Hapus</button>
         </div>
       </div>
       <p style="margin:11px 0 0">
@@ -239,7 +256,7 @@ function lookCard(s) {
           <button onclick="setLook('eval_bar',${!s.eval_bar})" ${s.has_evaluations ? "" : "disabled"}
             style="padding:4px 10px;font-size:12px;
             ${s.eval_bar ? "border-color:var(--accent);color:var(--accent)" : ""}">eval bar</button>
-          <button onclick="evaluate()" ${s.busy ? "disabled" : ""}
+          <button onclick="startEvaluate()" ${s.busy ? "disabled" : ""}
             style="padding:4px 10px;font-size:12px">Hitung evaluasi</button>
           <span class="hint">${s.has_evaluations ? "evaluasi tersimpan"
             : s.engine ? "engine: " + escape_(s.engine.split(/[\\/]/).pop()) : "belum ada engine"}</span>
@@ -261,60 +278,147 @@ async function setLook(field, value) {
   refresh();
 }
 
-async function evaluate() {
+async function startEvaluate() {
   try {
     const result = await api(`/api/projects/${current}/evaluate`, { method: "POST" });
     lookStamp = Date.now();
-    if (result.source === "engine") { run("evaluate"); return; }
+    if (result.source === "engine") { pollBusy(); return; }
     refresh();
   } catch (e) { alert(e.message); }
 }
 
+// Every box the user can draw on the frame. Each layer says where its rectangles
+// live in `state` and how to persist them, so one picker serves all of them.
+const LAYERS = {
+  paste: {
+    label: "Papan render", colour: "#7bb26a", multi: false,
+    hint: "Tarik kotak tempat papan hasil render ditempel di video. Kosongkan untuk memakai posisi papan overlay yang terdeteksi otomatis. Papan menjaga rasio aslinya dan diletakkan di tengah kotak.",
+    get: (s) => (s.paste_rect ? [s.paste_rect] : []),
+    save: (rects) => post("paste-rect", { rect: rects[0] || null }),
+  },
+  logo: {
+    label: "Hapus logo", colour: "#e2725b", multi: true,
+    hint: "Tarik kotak di atas tiap logo/watermark statis. Dihapus dengan delogo (interpolasi piksel sekitar) — paling rapi untuk logo diam di latar polos.",
+    get: (s) => s.logo_rects || [],
+    save: (rects) => post("logo-rects", { rects }),
+  },
+  blur: {
+    label: "Blur area", colour: "#5b9be2", multi: true,
+    hint: "Tarik kotak di atas area yang mau disamarkan. Pakai ini untuk yang berubah tiap frame (eval bar bawaan, jam, ticker) — delogo cuma menghasilkan noda pada elemen bergerak.",
+    get: (s) => s.blur_rects || [],
+    save: (rects) => post("blur-rects", { rects }),
+  },
+  brand: {
+    label: "Logo saya", colour: "#c9a227", multi: false,
+    hint: "Tarik kotak tempat logomu ditempel. Logo menjaga rasio aslinya dan diletakkan di tengah kotak. Upload gambarnya di bawah (PNG transparan paling bagus).",
+    get: (s) => (s.brand_rect ? [s.brand_rect] : []),
+    save: (rects) => post("brand-rect", { rect: rects[0] || null }),
+  },
+  white: {
+    label: "Nama putih", colour: "#dcdcd0", multi: false,
+    hint: "Tarik kotak untuk papan nama pemain putih. Teksnya diambil dari PGN dan diskalakan agar pas di kotak.",
+    get: (s) => (s.name_rects?.white ? [s.name_rects.white] : []),
+    save: (rects) => post("name-rects", { white: rects[0] || null, black: state.name_rects?.black || null }),
+  },
+  black: {
+    label: "Nama hitam", colour: "#8a8a80", multi: false,
+    hint: "Tarik kotak untuk papan nama pemain hitam.",
+    get: (s) => (s.name_rects?.black ? [s.name_rects.black] : []),
+    save: (rects) => post("name-rects", { white: state.name_rects?.white || null, black: rects[0] || null }),
+  },
+};
+let layer = "paste";
+
+function post(endpoint, body) {
+  return api(`/api/projects/${current}/${endpoint}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+}
+
 function togglePicker() { picking = picking === "board" ? false : "board"; draw(); }
-function toggleLogoPicker() { picking = picking === "logo" ? false : "logo"; draw(); }
+function toggleLayout() { picking = picking === "layout" ? false : "layout"; draw(); }
+function setLayer(name) { layer = name; pick = null; draw(); }
 
 function pickerCard(s) {
-  const isLogo = picking === "logo";
+  const isLayout = picking === "layout";
   const at = Math.round((s.duration || 60) * 0.55);
-  const count = (s.logo_rects || []).length;
+  const spec = LAYERS[layer];
+  const count = isLayout ? spec.get(s).length : 0;
+  const tabs = Object.entries(LAYERS).map(([name, l]) => `
+    <button onclick="setLayer('${name}')" style="padding:4px 10px;font-size:12px;${name === layer
+      ? `border-color:${l.colour};color:${l.colour}` : ""}">${l.label}${
+      l.get(s).length ? ` (${l.get(s).length})` : ""}</button>`).join("");
   return `<div class="card">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">${isLogo ? "Area logo" : "Area papan fisik"}</b>
-      <span class="hint">${isLogo ? `${count} kotak`
+      <b style="font-size:13px">${isLayout ? "Tata letak video" : "Area papan fisik"}</b>
+      <span class="hint">${isLayout ? `${count} kotak`
         : (s.board_quad ? "4 sudut tersimpan" : "belum dipilih")}</span>
     </div>
-    <p class="hint" style="margin:0 0 9px">${isLogo
-      ? "Tarik kotak di atas tiap logo/watermark yang mau dihilangkan dari full-video. Bisa lebih dari satu; klik × untuk hapus satu kotak."
+    ${isLayout ? `<div class="row" style="margin-bottom:9px">${tabs}</div>` : ""}
+    <p class="hint" style="margin:0 0 9px">${isLayout ? spec.hint
       : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital."}</p>
     <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
            src="/api/projects/${current}/frame?t=${at}&width=880">
       <div id="pickexisting"></div>
-      ${isLogo ? `<div id="pickbox" style="position:absolute;border:2px solid var(--accent);
-           background:rgba(123,178,106,.16);display:none;pointer-events:none"></div>` : `
+      ${isLayout ? `<div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
+           background:${spec.colour}2e;display:none;pointer-events:none"></div>` : `
       <svg id="pickpoly" style="position:absolute;left:0;top:0;pointer-events:none" width="100%" height="100%">
         <polygon id="pickpolygon" points="" fill="rgba(123,178,106,.18)" stroke="var(--accent)" stroke-width="2"></polygon>
       </svg>
       <div id="pickhandles"></div>`}
     </div>
     <div class="row" style="margin-top:10px">
-      ${isLogo
-        ? `<button class="primary" id="pickok" disabled onclick="addLogoRect()">Tambah kotak</button>`
+      ${isLayout
+        ? `<button class="primary" id="pickok" disabled onclick="addRect()">
+             ${spec.multi ? "Tambah kotak" : "Simpan kotak"}</button>
+           ${count ? `<button onclick="clearLayer()">Hapus kotak ${spec.label.toLowerCase()}</button>` : ""}`
         : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
-      <button onclick="${isLogo ? "toggleLogoPicker" : "togglePicker"}()">Tutup</button>
+      <button onclick="${isLayout ? "toggleLayout" : "togglePicker"}()">Tutup</button>
       <span id="pickmsg" class="hint"></span>
     </div>
+    ${isLayout && layer === "brand" ? brandUpload(s) : ""}
   </div>`;
 }
 
-function wirePicker() {
-  if (picking === "logo") wireLogoPicker(); else wireQuadPicker();
+function brandUpload(s) {
+  return `<div class="row" style="margin-top:12px;align-items:center">
+    <input type="file" id="brandfile" accept="image/png,image/jpeg,image/webp"
+           onchange="uploadBrand()" style="font-size:12px">
+    ${s.brand_file ? `<img src="/api/projects/${current}/file/${s.brand_file}?_=${lookStamp}"
+        style="height:34px;border-radius:4px;background:#0003;padding:3px">
+      <button onclick="removeBrand()">Hapus logo</button>`
+      : `<span class="hint">belum ada logo diunggah</span>`}
+  </div>`;
 }
 
-function wireLogoPicker() {
+async function uploadBrand() {
+  const input = $("brandfile");
+  if (!input.files?.length) return;
+  const body = new FormData();
+  body.append("file", input.files[0]);
+  try {
+    const response = await fetch(`/api/projects/${current}/brand`, { method: "POST", body });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || response.statusText);
+    lookStamp = Date.now();
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function removeBrand() {
+  await api(`/api/projects/${current}/brand`, { method: "DELETE" });
+  refresh();
+}
+
+function wirePicker() {
+  if (picking === "layout") wireRectPicker(); else wireQuadPicker();
+}
+
+function wireRectPicker() {
   const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
   let start = null;
   const at = (e) => {
@@ -350,15 +454,35 @@ function drawExistingRects() {
   const img = $("pickimg"), host = $("pickexisting");
   if (!img || !host) return;
   const scale = img.clientWidth / state.width;
-  const rects = state.logo_rects || [];
-  host.innerHTML = rects.map((r, i) => `
+  const spec = LAYERS[layer];
+  host.innerHTML = spec.get(state).map((r, i) => `
     <div style="position:absolute;left:${r[0] * scale}px;top:${r[1] * scale}px;
-         width:${r[2] * scale}px;height:${r[3] * scale}px;border:2px solid #e2725b;
-         background:rgba(226,114,91,.18)">
-      <button onclick="removeLogoRect(${i})" title="Hapus kotak ini"
+         width:${r[2] * scale}px;height:${r[3] * scale}px;border:2px solid ${spec.colour};
+         background:${spec.colour}2e">
+      <button onclick="removeRect(${i})" title="Hapus kotak ini"
          style="position:absolute;top:-11px;right:-11px;width:20px;height:20px;padding:0;
          border-radius:50%;font-size:11px;line-height:1;cursor:pointer">×</button>
     </div>`).join("");
+}
+
+async function addRect() {
+  if (!pick) return;
+  const spec = LAYERS[layer];
+  try {
+    await spec.save(spec.multi ? [...spec.get(state), pick] : [pick]);
+    pick = null; refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function removeRect(index) {
+  const spec = LAYERS[layer];
+  await spec.save(spec.get(state).filter((_, i) => i !== index));
+  refresh();
+}
+
+async function clearLayer() {
+  await LAYERS[layer].save([]);
+  refresh();
 }
 
 // Board corners: click 4 points to place, then drag any of them to follow the
@@ -434,25 +558,6 @@ async function clearQuad() {
     body: JSON.stringify({ quad: null }),
   });
   quadPoints = []; refresh();
-}
-
-async function addLogoRect() {
-  if (!pick) return;
-  const rects = [...(state.logo_rects || []), pick];
-  await api(`/api/projects/${current}/logo-rects`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rects }),
-  });
-  pick = null; refresh();
-}
-
-async function removeLogoRect(index) {
-  const rects = (state.logo_rects || []).filter((_, i) => i !== index);
-  await api(`/api/projects/${current}/logo-rects`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ rects }),
-  });
-  refresh();
 }
 
 // A single ply is far too short to judge in blitz, so the player reviews a slice
@@ -654,12 +759,7 @@ async function save() {
   dirty = false; refresh();
 }
 
-async function run(what) {
-  picking = false;
-  await api(`/api/projects/${current}/${what}`, {
-    method: "POST", headers: { "Content-Type": "application/json" },
-    body: what === "render" ? JSON.stringify({ full_video: true }) : "{}",
-  });
+function pollBusy() {
   refresh();
   clearInterval(timer);
   // poll only while work is running, otherwise a redraw would interrupt the review player
@@ -667,6 +767,15 @@ async function run(what) {
     await refresh();
     if (!state?.busy) clearInterval(timer);
   }, 1500);
+}
+
+async function run(what) {
+  picking = false;
+  await api(`/api/projects/${current}/${what}`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: what === "render" ? JSON.stringify({ full_video: true }) : "{}",
+  });
+  pollBusy();
 }
 
 loadList().then(() => showNew());
