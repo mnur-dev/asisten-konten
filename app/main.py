@@ -254,6 +254,21 @@ SHORT_PLIES = 20            # closing plies a short covers when nothing is store
 LEAD_IN = 0.0               # seconds of broadcast kept before the first move
 
 
+OUTRO = 60.0                # seconds of broadcast kept after the last move
+
+
+def outro_of(meta: dict) -> float:
+    """Seconds of broadcast kept after the last move -- the "selesai" box, mirror of
+    lead_in. Replaces the old fixed rule (board.mp4's end + 60 s, i.e. last move
+    + 63 s). 0 stops right on the last move; the default 60 keeps roughly the old
+    length for projects that never set it. Capped by the broadcast's length."""
+    try:
+        value = meta.get("outro")
+        return max(0.0, float(OUTRO if value is None else value))
+    except (TypeError, ValueError):
+        return OUTRO
+
+
 def lead_in_of(meta: dict) -> float:
     """Seconds of broadcast kept in front of the first move. 0 -- the default, and
     what projects made before this existed fall back to -- means the long video opens
@@ -343,6 +358,7 @@ def status(project_id: str):
     plies, pad, tail = short_cut_of(meta)
     meta["short_plies"], meta["short_pad"], meta["short_tail"] = plies, pad, tail
     meta["lead_in"] = lead_in_of(meta)
+    meta["outro"] = outro_of(meta)
     meta.setdefault("thumb_time", None)
     meta.setdefault("thumb_texts", [])
     meta["thumb_prompt"] = thumb_prompt_of(meta)
@@ -827,6 +843,13 @@ def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
             first_move = plan[0][1]
             lead_in = lead_in_of(meta)
             start = max(0.0, first_move - lead_in)
+            # every entry but the last (board.mp4's short closing hold) is time up to
+            # the next move, so their sum is when the final move lands
+            last_move = sum(seconds for _, seconds in plan[:-1])
+            outro = outro_of(meta)
+            end = max(start + 1.0, last_move + outro)
+            if meta.get("duration"):
+                end = min(end, float(meta["duration"]))
 
             zoom = meta.get("source_zoom")
             extras = [f"{len(logo_rects)} logo dihapus" if logo_rects else "",
@@ -834,14 +857,15 @@ def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
                       "logo + nama pemain" if furniture else "",
                       f"zoom {zoom['percent']:g}%" if zoom and zoom.get("percent", 100) > 100 else "",
                       f"mulai {start:.1f}s ({lead_in:.0f}s sebelum langkah 1)" if start > 0 else "",
-                      "mulai dari langkah 1" if start == 0 and first_move > 0 else ""]
+                      "mulai dari langkah 1" if start == 0 and first_move > 0 else "",
+                      f"selesai {end:.1f}s ({outro:.0f}s setelah langkah terakhir)"]
             detail = ", ".join(x for x in extras if x)
             logging.getLogger("core").info(
                 "Menimpa board overlay di video asli%s", f" ({detail})" if detail else "")
             overlay_composite(meta["video"], path / "board.mp4", path / "full-video.mp4",
                               paste_rect, logo_rects=logo_rects, blur_rects=blur_rects,
                               furniture=furniture, zoom=meta.get("source_zoom"), size=size,
-                              start=start)
+                              start=start, end=end)
         logging.getLogger("core").info("Render selesai")
         update(path, status="done")
 
@@ -901,6 +925,18 @@ def sound_file(name: str):
     if not target.is_file() or target.name not in allowed:
         raise HTTPException(404, "Not found")
     return FileResponse(target)
+
+
+@app.post("/api/projects/{project_id}/outro")
+def set_outro(project_id: str, seconds: float = Body(..., embed=True)):
+    """How many seconds of broadcast the long video keeps after the last move.
+    0 stops on the last move. Saved just before each render, like lead-in."""
+    path = folder(project_id)
+    if seconds < 0:
+        raise HTTPException(400, "outro must not be negative")
+    seconds = round(float(seconds), 2)
+    update(path, outro=seconds)
+    return {"outro": seconds}
 
 
 @app.post("/api/projects/{project_id}/lead-in")

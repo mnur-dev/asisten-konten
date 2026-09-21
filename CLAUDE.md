@@ -83,6 +83,16 @@ tidak dipotong di `plan`: `board.mp4` harus tetap utuh dari detik 0 karena short
 memakainya ulang dan menghitung dari awal file. Karena itu juga `lead_in` **tidak**
 masuk `board_look_of()` — ia tidak mengubah satu piksel pun di `board.mp4`.
 
+**Video panjang berhenti di `outro` detik setelah langkah terakhir.** Kotak "selesai +"
+di sebelah "mulai −" (default 60, 0 = berhenti tepat di langkah terakhir), disimpan di
+`meta.json` sebagai `outro` dan di-post ulang sebelum render seperti `lead_in`. Ini
+**menggantikan** aturan lama `HOLD_AFTER_BOARD` (board.mp4 habis + 60 dtk tetap, ≈ langkah
+terakhir + 63 dtk). Waktu langkah terakhir = jumlah semua durasi `plan` kecuali entri
+terakhir (hold 3 dtk penutup board.mp4). `overlay_composite(end=...)` membekukan frame
+terakhir board.mp4 (`tpad` clone) selama perlu lalu memotong dengan `-t end − start`;
+tetap dibatasi panjang siaran. Terukur di video sintetis: mulai 2, selesai 15 → 13,03 dtk
+dengan papan terakhir masih tampil; selesai melebihi siaran 30 dtk → 30,0 dtk.
+
 **`-ss` yang jatuh sedikit di atas batas frame menggeser video satu frame, audio
 tidak.** Hasilnya klik langkah berjalan satu frame mendahului gambar. Terukur di
 proyek nyata: `-ss 5.233333` memberi `start_time` video 0,033 s sementara audio 0,000;

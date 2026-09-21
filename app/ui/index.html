@@ -139,7 +139,7 @@ let spTextKey = null, spPopEl = null, spLastElapsed = -1;
 let shortOpts = { plies: 20, pad: 1, tail: 0 }, shortOptsFor = null;
 // Seconds of broadcast kept before the first move in the long video. 0 = open on
 // move 1. Held here while typing; pushed to the project right before a render.
-let leadIn = 0;
+let leadIn = 0, outro = 60;
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -245,6 +245,7 @@ function draw() {
     shortOptsFor = current;
     shortOpts = { plies: s.short_plies ?? 20, pad: s.short_pad ?? 1, tail: s.short_tail ?? 0 };
     leadIn = s.lead_in ?? 0;
+    outro = s.outro ?? 60;
     thumbAt = s.thumb_time ?? 0;
     thumbPrompt = s.thumb_prompt || ""; thumbPromptDirty = false;
   }
@@ -278,6 +279,10 @@ function draw() {
           <input id="leadIn" type="number" min="0" step="5" value="${leadIn}"
                  title="Detik siaran yang disisakan sebelum langkah pertama. 0 = video langsung mulai di langkah 1; 60 = mulai satu menit sebelumnya."
                  style="width:56px;padding:7px 6px" oninput="setLeadIn(this.value)">
+          <span class="hint">dtk · selesai +</span>
+          <input id="outro" type="number" min="0" step="5" value="${outro}"
+                 title="Detik siaran yang disisakan setelah langkah terakhir. 0 = video berhenti tepat di langkah terakhir; 60 = satu menit sesudahnya (papan terakhir tetap tampil)."
+                 style="width:56px;padding:7px 6px" oninput="setOutro(this.value)">
           <span class="hint" style="margin-right:6px">dtk</span>
           <span class="hint">ply</span>
           <input id="shortPlies" type="number" min="1" value="${shortOpts.plies}"
@@ -915,6 +920,11 @@ function shortParams() { return { ...shortOpts }; }
 function setLeadIn(value) {
   const number = parseFloat(value);
   leadIn = Math.max(0, isFinite(number) ? number : 0);
+}
+
+function setOutro(value) {
+  const number = parseFloat(value);
+  outro = Math.max(0, isFinite(number) ? number : 0);
 }
 
 function shortOptsDirty(s) {
@@ -2046,6 +2056,7 @@ async function runRender() {
     // save first: the endpoint renders the project's stored lead-in, so an edit left
     // unsaved in the box can never quietly render at the old start point
     await post("lead-in", { seconds: leadIn });
+    await post("outro", { seconds: outro });
     await api(`api/projects/${current}/render`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ full_video: true }),

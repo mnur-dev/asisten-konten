@@ -33,7 +33,6 @@ THEMES = {
 DEFAULT_THEME = "orange"
 
 # seconds the board stays frozen on its final position after the last move
-HOLD_AFTER_BOARD = 60.0
 
 # frame rate render() writes board.mp4 at -- overlay_composite snaps its start to
 # this grid so the seek lands on a whole frame instead of between two
@@ -657,8 +656,8 @@ def zoom_crop_rect(size, zoom):
 
 
 def overlay_composite(source, board_video, output, rect, logo_rects=None, encoder=None,
-                      blur_rects=None, furniture=None, hold=HOLD_AFTER_BOARD, zoom=None,
-                      size=None, start=0.0):
+                      blur_rects=None, furniture=None, zoom=None,
+                      size=None, start=0.0, end=None):
     """Paste the generated board over the broadcast, in the spot its digital overlay
     occupies, so the rendered board replaces the overlay in the original footage.
 
@@ -671,12 +670,12 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
     but blurred, for areas that keep changing and so smear under interpolation.
     `furniture`, if given, is a full-frame RGBA PNG (see furniture_layer) laid on last,
     so the channel logo and nameplates sit above everything else.
-    `hold` keeps the board's final position on screen for that many extra seconds.
-    The overlay ends with the shorter input, and board.mp4 runs out well before the
-    broadcast does (the game finishes; the stream keeps rolling through the handshake
-    and interview), so without this the composite would stop dead on the last move.
-    Freezing the final position is what a viewer expects there -- the board vanishing
-    would read as the video breaking. Capped by the broadcast's own length.
+    `end` is the broadcast second the video stops at (the user's "selesai" box: the
+    last move plus however long they want to keep). board.mp4 runs out a few seconds
+    after the last move while the stream keeps rolling, so its final position is
+    frozen (tpad clone) for as long as `end` needs -- the board vanishing would read
+    as the video breaking. None stops when board.mp4 does. Either way it is capped
+    by the broadcast's own length, since the overlay ends with the shorter input.
     The broadcast's own audio is dropped; only board_video's track (the move clicks,
     if enabled) survives, since board_video has no audio stream at all when they're off.
     `zoom`, if given, is {"percent": >=100, "x": 0-1, "y": 0-1} -- a crop centred at the
@@ -714,7 +713,9 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
         stages.append(f"[cut{index}]crop={bw}:{bh}:{bx}:{by},boxblur={radius}:2[soft{index}]")
         stages.append(f"[keep{index}][soft{index}]overlay={bx}:{by}[blur{index}]")
         label = f"blur{index}"
-    freeze = f",tpad=stop_mode=clone:stop_duration={hold:g}" if hold else ""
+    # board.mp4 starts at broadcast second 0 and never outlasts `end` by design, so
+    # freezing it for `end` seconds is always enough; -t below cuts the excess.
+    freeze = f",tpad=stop_mode=clone:stop_duration={end:g}" if end else ""
     stages.append(f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease{freeze}[b]")
     board_out = "board" if furniture else "v"
     stages.append(f"[{label}][b]overlay="
@@ -741,6 +742,7 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
         return ["ffmpeg", "-y", "-loglevel", "error", *inputs,
                 "-filter_complex", ";".join(stages),
                 "-map", "[v]", "-map", "1:a?", "-c:v", enc, *quality, "-pix_fmt", "yuv420p",
+                *(["-t", f"{end - snapped:.3f}"] if end else []),
                 "-c:a", "aac", "-b:a", "192k", str(output)]
     _run_ffmpeg(build_command, encoder, "Full-video render failed")
     return Path(output)
