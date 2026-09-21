@@ -265,8 +265,14 @@ hasil ekspor dari browser yang login, di `/home/admin/web/yt.sukaweb.my.id/priva
 systemd. `video.cookie_file()` mencobanya paling awal. Terukur 2026-09-21: video 808 detik
 terunduh penuh 1920x1080, 272 MB, dalam 74 detik.
 
-- yt-dlp **menulis balik** cookie yang dirotasi ke file itu (`ubuntu` satu grup dengan
-  `admin`, jadi bisa). Itu justru yang membuat sesinya awet — jangan dibuat read-only.
+- yt-dlp **menulis balik** jar cookie ke file itu setiap selesai (`ubuntu` satu grup dengan
+  `admin`, jadi bisa) — termasuk **penghapusan**. Terukur 2026-09-21 20:54: sesi yang sudah
+  dirotasi di browser ditolak YouTube, YouTube menyuruh menghapus cookie login, dan file
+  menyusut 21 → 11 baris dengan `SID`, `SAPISID`, `LOGIN_INFO` hilang. Penyebabnya tetap
+  rotasi di browser (cookie-nya sudah mati sebelum ditulis balik); tulis-balik hanya membuat
+  file yang tertinggal tidak bisa dipakai untuk mendiagnosis. Cookie harus diekspor dari
+  jendela incognito yang **langsung ditutup** — sesi yang masih dipakai browser akan
+  dirotasi dan mematikan salinan di server dalam hitungan menit sampai jam.
 - Butuh **Deno** untuk challenge JavaScript YouTube: dipasang lewat `pip install deno` ke
   venv, dan `.venv/bin` dimasukkan ke `PATH` unit systemd supaya yt-dlp menemukannya.
 - Kalau cookie kedaluwarsa, error yang dilaporkan adalah error percobaan cookie, bukan
