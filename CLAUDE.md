@@ -41,6 +41,9 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    (`wireScrubber()`): slider sepanjang video + tombol putar. Selama diputar/digeser
    yang tampil `<video>` sumber (di-crop CSS mengikuti `source_zoom`), begitu berhenti
    diganti JPEG `/frame` detik itu — kotak selalu digambar di atas still dari backend.
+   Di HP semua picker (`#pickwrap`) jalan lewat jembatan sentuh→mouse di akhir script:
+   sentuh-tahan 280 ms lalu geser = klik-kiri-tahan; usapan langsung tetap scroll
+   halaman; ketuk = klik. Picker baru di dalam `#pickwrap` otomatis ikut.
 7. **Render video panjang** — `board.mp4` + `full-video.mp4` (video asli, papan
    overlay-nya ditimpa video board kita; audio asli dibisukan, yang terdengar cuma
    klik langkah kalau suara langkah aktif). Dimulai di langkah pertama, bukan di

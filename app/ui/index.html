@@ -74,6 +74,9 @@
   .err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
   .scrub-row { max-width: 880px; }
+  #pickwrap, #pickwrap img { -webkit-touch-callout: none; -webkit-user-select: none; }
+  .touch-only { display: none; }
+  @media (hover: none) and (pointer: coarse) { .touch-only { display: block; } }
   /* Phones: the two fixed-height scroll panes become one normal page, the
      project list sits on top (capped so it doesn't push the panel off-screen),
      and every side-by-side .split stacks. */
@@ -694,6 +697,7 @@ function pickerCard(s) {
              style="width:70px;font-size:12px;padding:3px 6px">%
       <span class="hint">(100% = tanpa zoom)</span>
     </div>` : ""}
+    <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
     <div id="pickwrap" style="position:relative;display:inline-block;cursor:${isZoom ? "move" : "crosshair"};
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
@@ -791,6 +795,7 @@ function shortEditorCard(s) {
           <span class="hint">dari ${fmtTime(estimateShortDuration(
             shortOpts.plies, shortOpts.pad, shortOpts.tail))}</span>
         </div>` : ""}
+        <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
         <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
              user-select:none;-webkit-user-drag:none;background:#000">
           <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
@@ -2297,6 +2302,7 @@ function thumbEditorCard(s) {
                  style="width:56px" title="1.0 = pas otomatis di dalam kotak">
           <button class="primary" onclick="addThumbText()">Tambah</button>
         </div>
+        <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
         <div id="pickwrap" style="position:relative;display:inline-block;width:460px;max-width:100%;
              cursor:crosshair;user-select:none;background:#000;border-radius:7px">
           ${src ? `<img id="pickimg" draggable="false" src="${src}"
@@ -2392,6 +2398,61 @@ function drawExistingThumb() {
     host.appendChild(div);
   });
 }
+
+// Touch -> mouse bridge for every box picker (all of them live in #pickwrap and
+// were written against mouse events). A finger that moves straight away is a page
+// scroll and is left alone; holding still for HOLD_MS starts a drag, which is
+// replayed as mousedown/mousemove/mouseup at the finger -- the same sequence a
+// held left button produces. A quick tap becomes a click (quad corner placement).
+// Moves and the release go to whatever is under the finger, as a real mouse's do.
+(() => {
+  const HOLD_MS = 280, SLOP = 8;
+  let origin = null, start = null, timer = null, dragging = false;
+  const fire = (type, el, t) => el.dispatchEvent(new MouseEvent(type, {
+    bubbles: true, cancelable: true, view: window, button: 0,
+    buttons: type === "mousedown" || type === "mousemove" ? 1 : 0,
+    clientX: t.clientX, clientY: t.clientY }));
+  const under = (t) => document.elementFromPoint(t.clientX, t.clientY) || document.body;
+  const reset = () => { clearTimeout(timer); origin = null; dragging = false; };
+  document.addEventListener("touchstart", (e) => {
+    const el = e.target.closest && e.target;
+    if (!el || !el.closest("#pickwrap") || el.closest("button, input") || e.touches.length > 1) {
+      reset(); return;
+    }
+    origin = el; start = e.touches[0]; dragging = false;
+    const t = { clientX: start.clientX, clientY: start.clientY };
+    timer = setTimeout(() => {
+      dragging = true;
+      if (navigator.vibrate) navigator.vibrate(12);
+      fire("mousedown", origin, t);
+    }, HOLD_MS);
+  }, { passive: true });
+  document.addEventListener("touchmove", (e) => {
+    if (!origin) return;
+    const t = e.touches[0];
+    if (!dragging) {
+      if (Math.hypot(t.clientX - start.clientX, t.clientY - start.clientY) > SLOP) reset();
+      return;
+    }
+    e.preventDefault();                 // we own this gesture now: no scrolling
+    fire("mousemove", under(t), t);
+  }, { passive: false });
+  const end = (e) => {
+    if (!origin) return;
+    const t = e.changedTouches[0], el = origin, wasDrag = dragging;
+    reset();
+    if (e.type === "touchcancel") { if (wasDrag) fire("mouseup", document.body, t); return; }
+    e.preventDefault();                 // stop the browser's own emulated mouse events
+    if (wasDrag) fire("mouseup", under(t), t);
+    else fire("click", el, t);
+  };
+  document.addEventListener("touchend", end, { passive: false });
+  document.addEventListener("touchcancel", end);
+  // Long-press on an image would otherwise open the save/share menu.
+  document.addEventListener("contextmenu", (e) => {
+    if (e.target.closest && e.target.closest("#pickwrap")) e.preventDefault();
+  });
+})();
 
 loadList().then(() => showNew());
 </script>
