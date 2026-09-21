@@ -20,3 +20,6 @@ physical-board-*.png
 board-layout.jpg
 !samples/*.pgn
 !samples/*.json
+
+# cached OpenRouter model list (prices change; refetched on demand)
+openrouter-models.json

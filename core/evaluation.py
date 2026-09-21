@@ -13,6 +13,8 @@ import chess
 import chess.engine
 import chess.pgn
 
+from core.pgn import board_from
+
 log = logging.getLogger(__name__)
 
 EVAL_TAG = re.compile(r"\[%eval\s+(#?[-+]?\d+(?:\.\d+)?)\]")
@@ -66,26 +68,83 @@ def default_threads():
     return max(1, (__import__("os").cpu_count() or 2) - 1)
 
 
-def from_engine(timeline: dict, engine_path, movetime=0.25, threads=None, hash_mb=256):
-    """Score every position with a local UCI engine, from white's point of view."""
+def _white(score) -> dict:
+    """A python-chess PovScore as the {cp, mate} pair stored on disk, white's view."""
+    white = score.white()
+    if not white.is_mate():
+        return _score(cp=white.score())
+    plies = white.mate()
+    # Mate(0) -- the side to move is mated -- and MateGiven both report zero plies,
+    # so a stored 0 cannot say who won and advantage() would paint the bar for the
+    # mated side. Take the sign from the centipawn equivalent instead.
+    if plies == 0:
+        plies = 1 if white.score(mate_score=30000) > 0 else -1
+    return _score(mate=plies)
+
+
+def _finished(board) -> dict:
+    """Score of a position with no moves left, so the engine is never asked to
+    search one -- Stockfish answers `bestmove (none)` and the MultiPV list is empty."""
+    outcome = board.outcome()
+    if outcome and outcome.winner is not None:
+        return _score(mate=1 if outcome.winner == chess.WHITE else -1)
+    return _score(cp=0)
+
+
+def analyse_game(timeline: dict, engine_path, movetime=0.25, threads=None, hash_mb=256,
+                 multipv=2):
+    """Analyse every position of the game with a local UCI engine.
+
+    One record per position, index n being the position after n plies -- so index 0
+    is the start, which nothing else needs but the classifier does: the grade for
+    move 1 compares what White got against what was on offer before he moved.
+
+    Each record carries the white-point-of-view score, the engine's own best move
+    there, and the runner-up line's score. The gap between the two is what separates
+    an only-move from a comfortable choice, and it costs one extra PV rather than a
+    second pass over the game.
+    """
     engine_path = Path(engine_path)
-    board = chess.Board(timeline["initial_fen"])
-    results = []
+    # python-chess sets UCI_Chess960 itself from the board -- it refuses the option
+    # being set by hand -- so a 960 board is all that is needed here
+    board = board_from(timeline)
+    records = []
+
+    def look(board):
+        if board.is_game_over():
+            return {**_finished(board), "best_uci": None, "second": None}
+        lines = engine.analyse(board, chess.engine.Limit(time=movetime), multipv=multipv)
+        if not lines:
+            return {**_score(cp=0), "best_uci": None, "second": None}
+        best, *rest = lines
+        pv = best.get("pv") or []
+        return {**_white(best["score"]),
+                "best_uci": pv[0].uci() if pv else None,
+                "second": _white(rest[0]["score"]) if rest else None}
+
     with chess.engine.SimpleEngine.popen_uci(str(engine_path)) as engine:
         try:
             engine.configure({"Threads": threads or default_threads(), "Hash": hash_mb})
         except chess.engine.EngineError:
             pass
+        records.append(look(board))
         for index, move in enumerate(timeline["moves"], 1):
             board.push(chess.Move.from_uci(move["uci"]))
-            info = engine.analyse(board, chess.engine.Limit(time=movetime))
-            score = info["score"].white()
-            results.append(_score(mate=score.mate()) if score.is_mate()
-                           else _score(cp=score.score()))
+            records.append(look(board))
             if index % 20 == 0:
                 log.info("Evaluated %d/%d plies", index, len(timeline["moves"]))
-    log.info("Engine evaluation finished: %d plies", len(results))
-    return results
+    log.info("Engine evaluation finished: %d plies", len(records) - 1)
+    return records
+
+
+def scores_from(records: list[dict]) -> list[dict]:
+    """The eval bar's own list -- one {cp, mate} per ply -- out of analyse_game()."""
+    return [{"cp": r["cp"], "mate": r["mate"]} for r in records[1:]]
+
+
+def from_engine(timeline: dict, engine_path, **kwargs):
+    """Per-ply scores only, for callers that just want the bar filled in."""
+    return scores_from(analyse_game(timeline, engine_path, **kwargs))
 
 
 def advantage(score: dict | None) -> float:

@@ -51,8 +51,24 @@
   .ok { color: var(--accent); border-color: #34502c; }
   .guess { color: var(--warn); border-color: #5b4820; }
   .edited { color: #6fa8d4; border-color: #274157; }
+  /* Move grades, in the same colours core/render.py paints on the board. Kept as
+     text on a tinted chip rather than a filled circle: at 11px a circle turns into
+     an unreadable dot, and the table already has enough colour in it. */
+  .grade { font-size: 10.5px; padding: 1px 6px; border-radius: 4px;
+           border: 1px solid currentColor; opacity: .95; }
+  .grade-brilliant { color: #26c2a3; }
+  .grade-great { color: #7aaad4; }
+  .grade-best { color: #96bc4b; }
+  .grade-excellent, .grade-good { color: var(--muted); border-color: var(--line); }
+  .grade-inaccuracy { color: #f7c631; }
+  .grade-mistake { color: #ffa459; }
+  .grade-blunder { color: #fa412d; }
   .split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start; }
   .split img { width: 100%; border-radius: 7px; display: block; background: #0f1114; }
+  /* The short preview stacks transparent layers (caption PNG, board art) over the
+     video, so they must NOT pick up .split img's opaque fill -- that turns the top
+     layer into a solid rectangle hiding everything underneath it. */
+  #shortPreviewWrap img, #shortPreviewWrap video { background: transparent; border-radius: 0; }
   .split figcaption { color: var(--muted); font-size: 11px; margin-bottom: 5px; }
   .scroll { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; }
   .err { color: var(--bad); }
@@ -75,9 +91,30 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let current = null, state = null, selected = null, timer = null, dirty = false;
-let picking = false, pick = null;
+let picking = false, pick = null, pickAt = null;
 let quadPoints = [], quadDragIndex = null;
 let videoEl = null, rafId = null, rate = 0.5, lookStamp = 0;
+let musicList = [];
+// The preview <video> lives in the card's own markup, so every redraw hands us a
+// brand new element -- these carry playback across that so editing a box mid-play
+// doesn't restart the clip. (An earlier version kept one detached element and
+// re-parented it on each redraw; Chrome stalls a media element moved that way,
+// which left the preview showing everything except the video.)
+let spAudioEl = null, spRafId = null, spWindowsKey = null, spLoopActive = false;
+let spTime = null, spPlaying = false;
+// Windows/index live out here so the scrub bar can move the playhead between
+// jump-cut windows without reaching into the loop's closure.
+let spWindows = [], spIdx = 0, spScrubbing = false, spFramePlies = null, spOptsTimer = null;
+let spTextKey = null, spPopEl = null, spLastElapsed = -1;
+// The short's cut, as edited on screen. It lives here rather than in the inputs
+// themselves because draw() rebuilds the whole panel (every save, every poll tick),
+// and values read straight off the DOM snapped back to their defaults, quietly
+// putting the preview back to 20 plies. The saved copy lives on the project --
+// this is the draft, seeded from it whenever a project is opened.
+let shortOpts = { plies: 20, pad: 1, tail: 0 }, shortOptsFor = null;
+// Seconds of broadcast kept before the first move in the long video. 0 = open on
+// move 1. Held here while typing; pushed to the project right before a render.
+let leadIn = 0;
 
 async function api(path, options) {
   const response = await fetch(path, options);
@@ -93,6 +130,23 @@ async function loadList() {
       <button title="Hapus proyek" onclick="event.stopPropagation();deleteProject('${p.id}','${escape_(p.name || p.id).replace(/'/g, "\\'")}')"
         style="float:right;padding:1px 7px;font-size:12px">×</button></div>`).join("")
     || `<p class="hint">Belum ada proyek.</p>`;
+  // Wiping everything is permanent, so the button only exists when there is
+  // something to wipe -- and it asks twice.
+  if (projects.length) $("list").insertAdjacentHTML("beforeend",
+    `<button onclick="deleteAllProjects(${projects.length})"
+       style="width:100%;margin-top:10px;font-size:12px;color:var(--bad)">× Hapus semua proyek</button>`);
+}
+
+async function deleteAllProjects(count) {
+  if (!confirm(`Hapus SEMUA ${count} proyek? Semua video dan datanya akan hilang permanen.`)) return;
+  if (!confirm("Yakin? Tindakan ini tidak bisa dibatalkan.")) return;
+  try {
+    const { deleted, busy } = await api("/api/projects", { method: "DELETE" });
+    current = null; selected = null; clearInterval(timer); clearInterval(rafId);
+    $("panel").innerHTML = "";
+    await loadList();
+    if (busy.length) alert(`${deleted} proyek dihapus. Masih sibuk, dilewati: ${busy.join(", ")}`);
+  } catch (e) { alert(e.message); }
 }
 
 async function deleteProject(id, name) {
@@ -144,6 +198,9 @@ async function open_(id) {
   if (dirty && !confirm("Ada perubahan waktu yang belum disimpan. Tinggalkan?")) return;
   current = id; selected = null; dirty = false; picking = false; pick = null;
   segStart = null; clearInterval(rafId);
+  clearInterval(spRafId); spWindowsKey = null; spLoopActive = false;
+  spTime = null; spPlaying = false; spWindows = []; spFramePlies = null; spScrubbing = false;
+  spTextKey = null; shortOptsFor = null;
   clearInterval(timer); await refresh(); loadList();
   timer = setInterval(() => { if (state?.busy) refresh(); }, 1500);
 }
@@ -158,6 +215,15 @@ function draw() {
   const s = state, busy = s.busy;
   const done = (s.waypoints || []).filter((w) => w.timestamp !== null);
   const observed = done.filter((w) => w.observed).length;
+  const hasBoard = (s.outputs || []).includes("board.mp4");
+  if (shortOptsFor !== current) {          // opening a project: start from what it stored
+    shortOptsFor = current;
+    shortOpts = { plies: s.short_plies ?? 20, pad: s.short_pad ?? 1, tail: s.short_tail ?? 0 };
+    leadIn = s.lead_in ?? 0;
+    thumbAt = s.thumb_time ?? 0;
+    thumbPrompt = s.thumb_prompt || ""; thumbPromptDirty = false;
+  }
+  const cutDirty = shortOptsDirty(s);
   $("panel").innerHTML = `
     <div class="card">
       <div class="row" style="justify-content:space-between">
@@ -168,6 +234,8 @@ function draw() {
             <span style="opacity:.7">${escape_(s.video)}</span></p>
         </div>
         <div class="row">
+          ${s.status === "failed" && !s.width ? `<button class="primary" ${busy ? "disabled" : ""}
+                  onclick="run('retry-download')">Coba unduh lagi</button>` : ""}
           <button ${busy ? "disabled" : ""} onclick="run('detect')">
             ${s.waypoints ? "Deteksi ulang" : "Deteksi"}</button>
           <button ${busy ? "disabled" : ""} onclick="togglePicker()">
@@ -178,8 +246,42 @@ function draw() {
           <button ${busy || !s.waypoints || !s.board_quad ? "disabled" : ""}
                   onclick="run('retime')" title="Geser waktu tiap ply mengikuti papan kayu">
             Ikuti papan fisik</button>
-          <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="run('render')">
-            Render video</button>
+          <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runRender()"
+                  title="Render video panjang saja (board.mp4 + full-video.mp4). Short punya tombol sendiri.">
+            Render video panjang</button>
+          <span class="hint">mulai −</span>
+          <input id="leadIn" type="number" min="0" step="5" value="${leadIn}"
+                 title="Detik siaran yang disisakan sebelum langkah pertama. 0 = video langsung mulai di langkah 1; 60 = mulai satu menit sebelumnya."
+                 style="width:56px;padding:7px 6px" oninput="setLeadIn(this.value)">
+          <span class="hint" style="margin-right:6px">dtk</span>
+          <span class="hint">ply</span>
+          <input id="shortPlies" type="number" min="1" value="${shortOpts.plies}"
+                 title="Jumlah ply terakhir yang dipakai"
+                 style="width:56px;padding:7px 6px" oninput="setShortOpt('plies', this.value)">
+          <span class="hint">jeda</span>
+          <input id="shortPad" type="number" min="0.1" step="0.1" value="${shortOpts.pad}"
+                 title="Detik disisakan sebelum & sesudah tiap ply -- makin kecil, makin pendek shortnya"
+                 style="width:56px;padding:7px 6px" oninput="setShortOpt('pad', this.value)">
+          <span class="hint">ekor</span>
+          <input id="shortTail" type="number" min="0" step="0.5" value="${shortOpts.tail}"
+                 title="Detik tambahan setelah ply terakhir -- posisi akhir ditahan selama ini"
+                 style="width:56px;padding:7px 6px" oninput="setShortOpt('tail', this.value)">
+          <span id="shortEstimate" class="hint" style="min-width:78px"></span>
+          <button id="shortSave" ${busy || !cutDirty ? "disabled" : ""}
+                  ${cutDirty ? 'class="primary"' : ""} onclick="saveShortOpts()"
+                  title="Simpan ply/jeda/ekor ke proyek ini -- dipakai semua panel yang menghitung durasi, dan bertahan setelah halaman dimuat ulang">
+            ${cutDirty ? "Simpan durasi" : "Tersimpan"}</button>
+          <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runShort()"
+                  title="${hasBoard
+                    ? "Render short.mp4 saja, pakai board.mp4 dari render sebelumnya (video panjang tidak disentuh)"
+                    : "Render short.mp4 saja -- board.mp4 dibuat dulu karena belum ada, jadi kali ini lebih lama"}">
+            Render short</button>
+          <button ${busy || !s.waypoints ? "disabled" : ""} onclick="toggleShort()"
+                  title="Atur posisi papan & teks, dengan pratinjau live di sebelahnya">
+            Layout & preview short${s.has_short_layout ? " ✓" : ""}</button>
+          <button ${busy ? "disabled" : ""} onclick="toggleThumb()"
+                  title="Buat thumbnail YouTube dari satu frame video: gambar dibersihkan AI, judul digambar sendiri">
+            Thumbnail${s.has_thumbnail ? " ✓" : ""}</button>
           <button ${busy ? "disabled" : ""} title="Hapus proyek ini"
                   onclick="deleteProject('${current}','${escape_(s.name).replace(/'/g, "\\'")}')">Hapus</button>
         </div>
@@ -190,18 +292,48 @@ function draw() {
            <span class="tag ok">${observed} terbaca langsung</span>` : ""}
         ${s.error ? `<br><span class="err">${escape_(s.error)}</span>` : ""}
       </p>
+      ${s.download_progress ? `<div style="margin-top:8px">
+        <div style="height:6px;border-radius:3px;background:#0004;overflow:hidden">
+          <div style="height:100%;width:${s.download_progress.percent}%;background:var(--accent)"></div>
+        </div>
+        <p class="hint" style="margin:4px 0 0">Mengunduh video: ${s.download_progress.percent}%${
+          s.download_progress.eta && s.download_progress.eta !== "Unknown"
+            ? ` · sisa ${s.download_progress.eta}` : ""}</p>
+      </div>` : ""}
       ${(s.outputs || []).length ? `<div class="row" style="margin-top:11px">` +
         s.outputs.map((f) => `<a href="/api/projects/${current}/file/${f}" target="_blank"
           style="color:var(--accent)">${f}</a>`).join(" · ") + `</div>` : ""}
     </div>
     ${s.themes ? lookCard(s) : ""}
-    ${picking ? pickerCard(s) : ""}
+    ${picking === "short" ? shortEditorCard(s)
+      : picking === "thumb" ? thumbEditorCard(s) : picking ? pickerCard(s) : ""}
     ${s.log ? `<div class="card"><div class="hint" style="margin-bottom:7px">Log</div>
        <pre id="log">${escape_(s.log)}</pre></div>` : ""}
     ${s.waypoints ? waypointsCard(s) : ""}`;
-  if (picking) wirePicker();
+  if (s.waypoints) updateShortEstimate();
+  if (picking === "short") { wireShortPicker(); wireShortPreview(); }
+  else if (picking === "thumb") { wireThumbPicker(); refreshThumbPromptButton(); }
+  else if (picking) wirePicker();
   const log = $("log"); if (log) log.scrollTop = log.scrollHeight;
   if (segStart !== null && s.waypoints) showSegment(segStart);
+}
+
+// core/classify.py's grades. "excellent" and "good" get no symbol on purpose --
+// between them they cover most of a strong game, and a chip on nearly every row
+// would bury the handful that matter.
+const GRADES = { brilliant: "!!", great: "!", best: "★",
+                 inaccuracy: "?!", mistake: "?", blunder: "??" };
+
+function gradeChip(w) {
+  if (!GRADES[w.label]) return "";
+  const loss = w.loss === null || w.loss === undefined ? "" : ` · -${w.loss}% peluang menang`;
+  return ` <span class="grade grade-${w.label}" title="${w.label}${loss}">${GRADES[w.label]}</span>`;
+}
+
+function gradeCounts(counts) {
+  const parts = Object.keys(GRADES).filter((name) => counts[name]).map((name) =>
+    `<span class="grade grade-${name}" title="${name}">${GRADES[name]} ${counts[name]}</span>`);
+  return parts.length ? parts.join(" ") : `<span class="hint">tidak ada</span>`;
 }
 
 function waypointsCard(s) {
@@ -213,7 +345,7 @@ function waypointsCard(s) {
     const flag = w.needs_review ? ` <span class="tag guess">cek</span>` : "";
     const move = `${w.move_number}${w.side === "white" ? "." : "..."} ${escape_(w.san)}`;
     return `<tr class="ply ${selected === w.ply ? "on" : ""}" onclick="showReview(${w.ply})">
-      <td style="color:var(--muted)">${w.ply}</td><td>${move}</td>
+      <td style="color:var(--muted)">${w.ply}</td><td>${move}${gradeChip(w)}</td>
       <td>${fmt(w.timestamp)}</td><td>${tag}${flag}</td></tr>`;
   }).join("");
   return `<div class="card">
@@ -256,11 +388,35 @@ function lookCard(s) {
           <button onclick="setLook('eval_bar',${!s.eval_bar})" ${s.has_evaluations ? "" : "disabled"}
             style="padding:4px 10px;font-size:12px;
             ${s.eval_bar ? "border-color:var(--accent);color:var(--accent)" : ""}">eval bar</button>
+          <button onclick="setLook('clock_box',${!s.clock_box})" ${s.has_clocks ? "" : "disabled"}
+            title="${s.has_clocks ? "Jam dari [%clk] di PGN" : "PGN ini tidak punya [%clk]"}"
+            style="padding:4px 10px;font-size:12px;
+            ${s.clock_box ? "border-color:var(--accent);color:var(--accent)" : ""}">⏱ jam</button>
+          <button onclick="setLook('flip_board',${!s.flip_board})"
+            title="Balik papan: hitam di bawah. Eval bar dan papan jam ikut terbalik."
+            style="padding:4px 10px;font-size:12px;
+            ${s.flip_board ? "border-color:var(--accent);color:var(--accent)" : ""}">
+            ${s.flip_board ? "⇅ hitam di bawah" : "⇅ balik papan"}</button>
+          <button onclick="setLook('move_badge',${!s.move_badge})"
+            ${s.has_classification ? "" : "disabled"}
+            title="${s.has_classification ? "Badge !! / ?? di petak tujuan langkah"
+              : "Hitung evaluasi dulu untuk mendapat klasifikasi"}"
+            style="padding:4px 10px;font-size:12px;
+            ${s.move_badge ? "border-color:var(--accent);color:var(--accent)" : ""}">!! badge</button>
           <button onclick="startEvaluate()" ${s.busy ? "disabled" : ""}
             style="padding:4px 10px;font-size:12px">Hitung evaluasi</button>
-          <span class="hint">${s.has_evaluations ? "evaluasi tersimpan"
+          <span class="hint">${s.has_classification ? "evaluasi + klasifikasi tersimpan"
+            : s.has_evaluations ? "evaluasi tersimpan — klik untuk klasifikasi langkah"
             : s.engine ? "engine: " + escape_(s.engine.split(/[\\/]/).pop()) : "belum ada engine"}</span>
         </div>
+        ${s.classification ? `
+        <div class="hint" style="margin:12px 0 6px">Klasifikasi langkah</div>
+        <div class="row" style="gap:8px">
+          <span class="hint" style="width:42px">Putih</span>${gradeCounts(s.classification.white)}
+        </div>
+        <div class="row" style="gap:8px;margin-top:5px">
+          <span class="hint" style="width:42px">Hitam</span>${gradeCounts(s.classification.black)}
+        </div>` : ""}
         <p class="hint" style="margin:12px 0 0">Set bidak tambahan: taruh SVG di
           <code>assets/pieces/&lt;nama&gt;/wK.svg</code> … <code>bP.svg</code>.
           Engine: taruh Stockfish di <code>engines/</code>.</p>
@@ -290,6 +446,10 @@ async function startEvaluate() {
 // Every box the user can draw on the frame. Each layer says where its rectangles
 // live in `state` and how to persist them, so one picker serves all of them.
 const LAYERS = {
+  zoom: {
+    label: "Zoom", colour: "#e98839", special: true,
+    hint: "Atur persentase zoom, lalu geser kotaknya untuk menentukan arena video sumber yang dipakai di render final. Diterapkan PALING AWAL, sebelum papan/logo/nama ditempel -- jadi atur ini dulu, baru tempatkan kotak-kotak lain di bawah, sebab pratinjaunya mengikuti crop zoom ini.",
+  },
   paste: {
     label: "Papan render", colour: "#7bb26a", multi: false,
     hint: "Tarik kotak tempat papan hasil render ditempel di video. Kosongkan untuk memakai posisi papan overlay yang terdeteksi otomatis. Papan menjaga rasio aslinya dan diletakkan di tengah kotak.",
@@ -318,16 +478,38 @@ const LAYERS = {
     label: "Nama putih", colour: "#dcdcd0", multi: false,
     hint: "Tarik kotak untuk papan nama pemain putih. Teksnya diambil dari PGN dan diskalakan agar pas di kotak.",
     get: (s) => (s.name_rects?.white ? [s.name_rects.white] : []),
+    pairSize: (s) => s.name_rects?.black ? [s.name_rects.black[2], s.name_rects.black[3]] : null,
     save: (rects) => post("name-rects", { white: rects[0] || null, black: state.name_rects?.black || null }),
   },
   black: {
     label: "Nama hitam", colour: "#8a8a80", multi: false,
     hint: "Tarik kotak untuk papan nama pemain hitam.",
     get: (s) => (s.name_rects?.black ? [s.name_rects.black] : []),
+    pairSize: (s) => s.name_rects?.white ? [s.name_rects.white[2], s.name_rects.white[3]] : null,
     save: (rects) => post("name-rects", { white: state.name_rects?.white || null, black: rects[0] || null }),
   },
 };
 let layer = "paste";
+
+// Layout picker for the vertical short: board position + user captions, drawn over
+// a preview of the short's own canvas (short-frame) rather than the source frame --
+// coordinates here are in SHORT_W x SHORT_H canvas pixels, not source-video pixels.
+const SHORT_W = 1080, SHORT_H = 1920;
+const SHORT_LAYERS = {
+  board: {
+    label: "Papan", colour: "#7bb26a", multi: false,
+    hint: "Tarik kotak tempat papan diletakkan di video short. Papan menjaga rasio aslinya dan diletakkan di tengah kotak. Kosongkan (hapus kotak) untuk memakai posisi tengah bawaan.",
+    get: (s) => (s.short_board_rect ? [s.short_board_rect] : []),
+    save: (rects) => post("short-board-rect", { rect: rects[0] || null }),
+  },
+  text: {
+    label: "Teks", colour: "#e2b33b", multi: true, withText: true,
+    hint: "Semua caption memakai SATU kotak yang sama -- kotak pertama yang kamu tarik. Sesudah itu tinggal isi teks, atur detik & ukurannya, lalu klik \"Tambah teks\"; tidak perlu menarik kotak lagi. Mau memindahkan kotaknya, tarik kotak baru lalu klik \"Pindahkan kotak\" dan semua caption ikut pindah.",
+    get: (s) => s.short_texts || [],
+    save: (items) => post("short-texts", { texts: items }),
+  },
+};
+let shortLayer = "board";
 
 function post(endpoint, body) {
   return api(`/api/projects/${current}/${endpoint}`, {
@@ -336,42 +518,104 @@ function post(endpoint, body) {
   });
 }
 
-function togglePicker() { picking = picking === "board" ? false : "board"; draw(); }
-function toggleLayout() { picking = picking === "layout" ? false : "layout"; draw(); }
+function togglePicker() { picking = picking === "board" ? false : "board"; pickAt = null; draw(); }
+function toggleLayout() { picking = picking === "layout" ? false : "layout"; pickAt = null; draw(); }
 function setLayer(name) { layer = name; pick = null; draw(); }
+async function toggleShort() {
+  const closing = picking === "short";
+  picking = closing ? false : "short";
+  pick = null;
+  if (closing) {
+    clearInterval(spRafId);
+    spLoopActive = false; spPlaying = false; spTime = null; spWindowsKey = null;
+    spWindows = []; spFramePlies = null; spScrubbing = false; spTextKey = null;
+    if (spAudioEl) spAudioEl.pause();
+  } else if (!musicList.length) {
+    try { musicList = (await api("/api/sounds")).music; } catch (e) {}
+  }
+  draw();
+}
+function setShortLayer(name) { shortLayer = name; pick = null; draw(); }
+function fmtTime(t) {
+  if (t === null || t === undefined) return "—";
+  const total = Math.max(0, Math.round(t));
+  return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
+}
+
+function setPickAt(t) { pickAt = Math.round(Math.min(Math.max(t, 0), state.duration || t)); draw(); }
+function setPickAtInput() {
+  const raw = $("pickattime").value.trim();
+  const parts = raw.split(":").map(Number);
+  if (parts.some(Number.isNaN) || !parts.length) return;
+  const secs = parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
+  setPickAt(secs);
+}
 
 function pickerCard(s) {
   const isLayout = picking === "layout";
-  const at = Math.round((s.duration || 60) * 0.55);
+  const isZoom = isLayout && layer === "zoom";
+  const duration = s.duration || 60;
+  const at = pickAt ?? Math.round(duration * 0.55);
+  const presets = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85].map((p) => Math.round(duration * p));
   const spec = LAYERS[layer];
-  const count = isLayout ? spec.get(s).length : 0;
+  const count = isLayout && !spec.special ? spec.get(s).length : 0;
+  const fixedSize = spec.pairSize && !count ? spec.pairSize(s) : null;
   const tabs = Object.entries(LAYERS).map(([name, l]) => `
     <button onclick="setLayer('${name}')" style="padding:4px 10px;font-size:12px;${name === layer
       ? `border-color:${l.colour};color:${l.colour}` : ""}">${l.label}${
-      l.get(s).length ? ` (${l.get(s).length})` : ""}</button>`).join("");
+      l.special ? (s.source_zoom ? ` (${s.source_zoom.percent}%)` : "")
+                : (l.get(s).length ? ` (${l.get(s).length})` : "")}</button>`).join("");
   return `<div class="card">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
       <b style="font-size:13px">${isLayout ? "Tata letak video" : "Area papan fisik"}</b>
-      <span class="hint">${isLayout ? `${count} kotak`
+      <span class="hint">${isZoom ? (s.source_zoom ? `${s.source_zoom.percent}%` : "tanpa zoom")
+        : isLayout ? `${count} kotak`
         : (s.board_quad ? "4 sudut tersimpan" : "belum dipilih")}</span>
     </div>
     ${isLayout ? `<div class="row" style="margin-bottom:9px">${tabs}</div>` : ""}
     <p class="hint" style="margin:0 0 9px">${isLayout ? spec.hint
-      : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital."}</p>
-    <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
+      : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital."}
+      ${fixedSize ? ` Ukuran kotak (${fixedSize[0]}×${fixedSize[1]} px) mengikuti kotak nama satunya —
+      klik lalu geser untuk menempatkan, tidak perlu digambar ulang.` : ""}
+      ${isLayout && !isZoom && s.source_zoom ? ` Pratinjau di bawah sudah mengikuti zoom
+      ${s.source_zoom.percent}% yang diatur di tab Zoom — kotak yang kamu buat di sini otomatis
+      dalam skala yang sama.` : ""}</p>
+    ${isZoom ? `<div class="row" style="margin-bottom:9px;align-items:center">
+      <span class="hint">Persen zoom:</span>
+      <input id="zoompercent" type="number" min="100" max="500" step="5"
+             value="${s.source_zoom?.percent || 100}" onchange="setZoomPercent(this.value)"
+             style="width:70px;font-size:12px;padding:3px 6px">%
+      <span class="hint">(100% = tanpa zoom)</span>
+    </div>` : ""}
+    <div class="row" style="margin-bottom:9px;align-items:center;flex-wrap:wrap">
+      <span class="hint">Ambil gambar dari:</span>
+      ${presets.map((t) => `<button onclick="setPickAt(${t})"
+          style="padding:3px 9px;font-size:11px;${t === at ? "border-color:var(--accent);color:var(--accent)" : ""}">
+          ${fmt(t)}</button>`).join("")}
+      <input id="pickattime" type="text" placeholder="detik atau mm:ss" value="${at}"
+             style="width:90px;font-size:11px;padding:3px 6px"
+             onkeydown="if(event.key==='Enter') setPickAtInput()">
+      <button onclick="setPickAtInput()" style="padding:3px 9px;font-size:11px">Pakai waktu ini</button>
+    </div>
+    <div id="pickwrap" style="position:relative;display:inline-block;cursor:${isZoom ? "move" : "crosshair"};
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
-           src="/api/projects/${current}/frame?t=${at}&width=880">
+           src="/api/projects/${current}/frame?t=${at}&width=880${isLayout && !isZoom ? "&zoomed=1" : ""}">
       <div id="pickexisting"></div>
-      ${isLayout ? `<div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
-           background:${spec.colour}2e;display:none;pointer-events:none"></div>` : `
+      ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
+           background:${spec.colour}26;pointer-events:none;cursor:move"></div>` : ""}
+      ${isLayout && !isZoom ? `<div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
+           background:${spec.colour}2e;display:none;pointer-events:none"></div>` : ""}
+      ${!isLayout ? `
       <svg id="pickpoly" style="position:absolute;left:0;top:0;pointer-events:none" width="100%" height="100%">
         <polygon id="pickpolygon" points="" fill="rgba(123,178,106,.18)" stroke="var(--accent)" stroke-width="2"></polygon>
       </svg>
-      <div id="pickhandles"></div>`}
+      <div id="pickhandles"></div>` : ""}
     </div>
     <div class="row" style="margin-top:10px">
-      ${isLayout
+      ${isZoom
+        ? `${s.source_zoom ? `<button onclick="resetZoom()">Hapus zoom</button>` : ""}`
+        : isLayout
         ? `<button class="primary" id="pickok" disabled onclick="addRect()">
              ${spec.multi ? "Tambah kotak" : "Simpan kotak"}</button>
            ${count ? `<button onclick="clearLayer()">Hapus kotak ${spec.label.toLowerCase()}</button>` : ""}`
@@ -379,7 +623,7 @@ function pickerCard(s) {
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
       <button onclick="${isLayout ? "toggleLayout" : "togglePicker"}()">Tutup</button>
-      <span id="pickmsg" class="hint"></span>
+      <span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>
     </div>
     ${isLayout && layer === "brand" ? brandUpload(s) : ""}
   </div>`;
@@ -414,11 +658,529 @@ async function removeBrand() {
   refresh();
 }
 
-function wirePicker() {
-  if (picking === "layout") wireRectPicker(); else wireQuadPicker();
+function shortEditorCard(s) {
+  const spec = SHORT_LAYERS[shortLayer];
+  const items = spec.get(s);
+  const { plies } = shortParams();
+  const tabs = Object.entries(SHORT_LAYERS).map(([name, l]) => `
+    <button onclick="setShortLayer('${name}')" style="padding:4px 10px;font-size:12px;${name === shortLayer
+      ? `border-color:${l.colour};color:${l.colour}` : ""}">${l.label}${
+      l.get(s).length ? ` (${l.get(s).length})` : ""}</button>`).join("");
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b style="font-size:13px">Layout & preview short</b>
+      <button onclick="toggleShort()">Tutup</button>
+    </div>
+    <div class="split">
+      <div>
+        <div class="row" style="justify-content:space-between;margin-bottom:9px">
+          <div class="row">${tabs}</div>
+          <span class="hint">${items.length} kotak</span>
+        </div>
+        <p class="hint" style="margin:0 0 9px">${spec.hint}</p>
+        ${spec.withText ? `<div class="row" style="margin-bottom:9px">
+          <input id="shorttext" placeholder="Teks caption..." style="max-width:190px">
+          <span class="hint">ukuran</span>
+          <input id="shorttextsize" type="number" min="0.4" max="2.5" step="0.1" value="1.0"
+                 title="Pengali ukuran teks -- 1.0 = pas otomatis di kotak" style="width:52px">
+          <span class="hint">detik</span>
+          <input id="shorttextstart" type="number" min="0" step="0.5" value="0" style="width:52px"
+                 title="Muncul mulai detik ke-berapa di video short">
+          <span class="hint">s/d</span>
+          <input id="shorttextend" type="number" min="0" step="0.5" placeholder="akhir"
+                 style="width:52px" title="Hilang di detik ke-berapa. Kosongkan = tampil sampai habis">
+          <span class="hint">dari ${fmtTime(estimateShortDuration(
+            shortOpts.plies, shortOpts.pad, shortOpts.tail))}</span>
+        </div>` : ""}
+        <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
+             user-select:none;-webkit-user-drag:none;background:#000">
+          <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
+               src="/api/projects/${current}/short-frame?plies=${plies}&width=380&_=${lookStamp}">
+          <div id="pickexisting"></div>
+          <div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
+               background:${spec.colour}2e;display:none;pointer-events:none"></div>
+        </div>
+        <div class="row" style="margin-top:10px">
+          <button class="primary" id="pickok" ${spec.withText && items.length ? "" : "disabled"}
+                  onclick="addShortItem()">${spec.multi ? "Tambah teks" : "Simpan kotak"}</button>
+          ${spec.withText && items.length ? `<button id="pickmove" disabled onclick="moveShortTextBox()"
+             title="Pindahkan kotak bersama ke posisi yang baru ditarik -- semua caption ikut">
+             Pindahkan kotak</button>` : ""}
+          ${items.length ? `<button onclick="clearShortLayer()">Hapus semua ${spec.label.toLowerCase()}</button>` : ""}
+          <span id="pickmsg" class="hint"></span>
+        </div>
+        ${spec.withText && items.length ? shortTextTable(items) : ""}
+      </div>
+      <div>
+        <p class="hint" style="margin:0 0 9px">Live -- ikut berubah begitu kotak di kiri digeser
+          atau disimpan. Papan & teks sama persis dengan hasil render; cuma blur latar yang didekati.</p>
+        <div id="shortPreviewWrap" style="position:relative;width:300px;max-width:100%;
+             aspect-ratio:${SHORT_W}/${SHORT_H};background:#000;border-radius:10px;overflow:hidden;
+             margin:0 auto">
+          <img id="spBackdrop" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
+               src="/api/projects/${current}/short-frame?plies=${plies}&width=300&_=${lookStamp}">
+          <video id="spVideo" muted playsinline preload="auto"
+                 src="/api/projects/${current}/video"
+                 style="position:absolute;top:0;left:0;width:100%;height:auto;display:block"></video>
+          <div id="spBoards"></div>
+          <div id="spTexts" style="position:absolute;inset:0;pointer-events:none"></div>
+        </div>
+        <div id="spBar" title="Klik atau geser buat pindah waktu"
+             style="position:relative;height:16px;margin:8px auto 7px;max-width:300px;
+             cursor:pointer;touch-action:none">
+          <div style="position:absolute;top:5px;left:0;right:0;height:6px;border-radius:3px;
+               background:#0f1114"></div>
+          <div id="spFill" style="position:absolute;top:5px;left:0;width:0;height:6px;
+               background:#3d4654;border-radius:3px"></div>
+          <div id="spHandle" style="position:absolute;top:2px;left:0;margin-left:-6px;width:12px;
+               height:12px;border-radius:50%;background:var(--accent)"></div>
+        </div>
+        <div class="row">
+          <button id="spPlay" onclick="toggleShortPreviewPlay()">▶ Putar</button>
+          <span id="spTime" class="hint"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+  ${musicCard(s)}`;
 }
 
-function wireRectPicker() {
+function musicCard(s) {
+  const track = musicList.find((m) => m.name === s.short_music);
+  const duration = track?.duration || 0;
+  const offset = s.short_music_offset || 0;
+  return `<div class="card">
+    <b style="font-size:13px">Musik latar</b>
+    <p class="hint" style="margin:6px 0 9px">Pilih lagu, lalu geser slidernya buat nentuin lagu mulai
+      diputar dari detik/menit berapa. Klik ▶ buat dengar langsung sebelum disimpan. Taruh file lagu
+      di <code>assets/sounds/</code> supaya muncul di daftar.</p>
+    <div class="row" style="margin-bottom:9px">
+      <select id="musicSelect" onchange="setMusicName(this.value)">
+        <option value="">(tanpa musik)</option>
+        ${musicList.map((m) => `<option value="${escape_(m.name)}" ${m.name === s.short_music ? "selected" : ""}>
+          ${escape_(m.name)} · ${fmtTime(m.duration)}</option>`).join("")}
+      </select>
+      <button onclick="toggleMusicPreview()" ${s.short_music ? "" : "disabled"}>▶ Dengar</button>
+    </div>
+    ${s.short_music ? `<div class="row" style="align-items:center;gap:9px">
+      <input id="musicOffset" type="range" min="0" max="${Math.max(1, duration - 1)}" step="0.1"
+             value="${offset}" style="flex:1" oninput="scrubMusic(this.value)"
+             onchange="saveMusicOffset(this.value)">
+      <span id="musicTime" class="hint" style="width:80px">${fmtTime(offset)} / ${fmtTime(duration)}</span>
+    </div>
+    <audio id="musicPlayer" src="/api/sounds/${encodeURIComponent(s.short_music)}" preload="none"></audio>` : ""}
+  </div>`;
+}
+
+async function setMusicName(name) {
+  try {
+    await post("short-music", { name: name || null, offset: 0 });
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+function scrubMusic(value) {
+  const time = $("musicTime"), player = $("musicPlayer");
+  const duration = musicList.find((m) => m.name === state.short_music)?.duration || 0;
+  if (time) time.textContent = `${fmtTime(Number(value))} / ${fmtTime(duration)}`;
+  if (player) player.currentTime = Number(value);
+}
+
+async function saveMusicOffset(value) {
+  state.short_music_offset = Number(value);
+  try {
+    await post("short-music", { name: state.short_music, offset: Number(value) });
+  } catch (e) { alert(e.message); }
+}
+
+function toggleMusicPreview() {
+  const player = $("musicPlayer");
+  if (!player) return;
+  if (player.paused) {
+    player.currentTime = state.short_music_offset || 0;
+    player.play();
+  } else {
+    player.pause();
+  }
+}
+
+function shortParams() { return { ...shortOpts }; }
+
+// No save button: runRender() posts this just before it renders, the same way
+// runShort() saves the cut first, so the box can never quietly render at an old value.
+function setLeadIn(value) {
+  const number = parseFloat(value);
+  leadIn = Math.max(0, isFinite(number) ? number : 0);
+}
+
+function shortOptsDirty(s) {
+  return shortOpts.plies !== (s.short_plies ?? 20)
+      || shortOpts.pad !== (s.short_pad ?? 1)
+      || shortOpts.tail !== (s.short_tail ?? 0);
+}
+
+// Persist the cut onto the project. Everything that quotes a duration -- the
+// estimate, the caption timing table, both render buttons -- then works off one
+// stored number instead of whatever happened to be typed in the boxes.
+async function saveShortOpts() {
+  try {
+    await post("short-cut", { plies: shortOpts.plies, pad: shortOpts.pad, tail: shortOpts.tail });
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// One handler for all three boxes. The estimate follows every keystroke, but the
+// preview only catches up once typing settles -- rebuilding it re-fetches the
+// backdrop frame and every board position, which is far too much for each digit.
+function setShortOpt(key, value) {
+  const number = parseFloat(value);
+  if (key === "plies") shortOpts.plies = Math.max(1, parseInt(value, 10) || 1);
+  else if (key === "pad") shortOpts.pad = Math.max(0.1, isFinite(number) ? number : 1);
+  else shortOpts.tail = Math.max(0, isFinite(number) ? number : 0);
+  updateShortEstimate();
+  refreshCutButton();
+  clearTimeout(spOptsTimer);
+  spOptsTimer = setTimeout(applyShortOptions, 350);
+}
+
+// Typing doesn't redraw the panel (that would steal focus mid-keystroke), so the
+// save button has to be re-styled in place as the draft drifts from what's stored.
+function refreshCutButton() {
+  const button = $("shortSave");
+  if (!button || !state) return;
+  const dirty = shortOptsDirty(state);
+  button.disabled = !!state.busy || !dirty;
+  button.className = dirty ? "primary" : "";
+  button.textContent = dirty ? "Simpan durasi" : "Tersimpan";
+}
+
+// Pushes the current plies/pad/tail into the open preview: a different ply count
+// means a different reference frame for the backdrop, and any of the three means
+// a different set of windows.
+function applyShortOptions() {
+  if (picking !== "short") return;
+  const { plies } = shortOpts;
+  if (plies !== spFramePlies) {
+    const stamp = Date.now();
+    const backdrop = $("spBackdrop"), pickimg = $("pickimg");
+    if (backdrop) backdrop.src = `/api/projects/${current}/short-frame?plies=${plies}&width=300&_=${stamp}`;
+    if (pickimg) {
+      pickimg.onload = drawExistingShort;
+      pickimg.src = `/api/projects/${current}/short-frame?plies=${plies}&width=380&_=${stamp}`;
+    }
+  }
+  wireShortPreview();
+}
+
+// Jump-cut math mirroring core/render.py's short_windows(): a `pad`-second window
+// around each of the last `plies` plies, merged where they overlap, with `tail`
+// extra seconds on the final one -- keep these two in sync if that changes. Doing
+// this client-side means the duration estimate and the browser preview both update
+// instantly, with no round trip to the server.
+function computeShortWindows(plies, pad, tail = 0) {
+  const timed = (state?.waypoints || []).filter((w) => w.timestamp !== null);
+  const included = plies > 0 ? timed.slice(-plies) : timed;
+  const raw = included.map((w) => [Math.max(0, w.timestamp - pad), w.timestamp + pad])
+    .sort((a, b) => a[0] - b[0]);
+  const merged = [];
+  for (const [s, e] of raw) {
+    if (merged.length && s <= merged[merged.length - 1][1]) {
+      merged[merged.length - 1][1] = Math.max(merged[merged.length - 1][1], e);
+    } else {
+      merged.push([s, e]);
+    }
+  }
+  if (merged.length && tail > 0) merged[merged.length - 1][1] += tail;
+  const limit = state?.duration;
+  if (merged.length && limit) {
+    return merged.filter(([a]) => a < limit).map(([a, b]) => [a, Math.min(b, limit)]);
+  }
+  return merged;
+}
+
+function estimateShortDuration(plies, pad, tail) {
+  return computeShortWindows(plies, pad, tail).reduce((sum, [s, e]) => sum + (e - s), 0);
+}
+
+function updateShortEstimate() {
+  const el = $("shortEstimate");
+  if (!el || !state?.waypoints) return;
+  const { plies, pad, tail } = shortParams();
+  const dur = estimateShortDuration(plies, pad, tail);
+  el.textContent = `≈ ${fmtTime(dur)}`;
+  el.style.color = dur > 50 ? "var(--warn)" : "var(--accent)";
+}
+
+// Browser-side preview of the short, before spending time on a real ffmpeg render:
+// video + board + captions + music played together, roughly positioned the same
+// way short_clip() composites them server-side (core/render.py's SHORT_TEXT_GAP,
+// SHORT_BOTTOM_MARGIN, SHORT_BOARD_WIDTH -- keep these two in sync if those change).
+function defaultBoardRect() {
+  const topH = Math.round(SHORT_W * state.height / state.width / 2) * 2;
+  const gap = Math.round(SHORT_H * 0.09), bottomMargin = Math.round(SHORT_H * 0.04);
+  const boardY = topH + gap, boardW = Math.round(SHORT_W * 0.70);
+  const boardH = Math.max(10, SHORT_H - boardY - bottomMargin);
+  return [Math.round((SHORT_W - boardW) / 2), boardY, boardW, boardH];
+}
+
+function ensureShortAudio() {
+  if (!spAudioEl) spAudioEl = document.createElement("audio");
+  return spAudioEl;
+}
+
+// The same pop the render mixes in at each caption start (assets/sounds/pop.mp3),
+// so the preview's timing can be judged by ear and not just by eye. Cloned per
+// hit because two captions can start close enough together that one element would
+// cut its own previous play short.
+function playCaptionPop() {
+  if (!state?.caption_pop) return;
+  if (!spPopEl) {
+    spPopEl = new Audio(`/api/sounds/${encodeURIComponent(state.caption_pop)}`);
+    spPopEl.preload = "auto";
+  }
+  const shot = spPopEl.cloneNode();
+  shot.volume = 0.9;
+  shot.play().catch(() => {});
+}
+
+// Runs on every redraw now that layout editing and preview share one card --
+// dragging a box in the picker calls refresh() just like everything else there,
+// so the loop is handed the previous playback position (spTime/spPlaying) and
+// picks up where it left off instead of restarting on each tiny edit. Changing
+// plies/pad/tail does restart it, since that genuinely rebuilds the window list.
+function wireShortPreview() {
+  const wrap = $("shortPreviewWrap");
+  if (!wrap) return;
+
+  const { plies, pad, tail } = shortParams();
+  const windows = computeShortWindows(plies, pad, tail);
+  const included = (state.waypoints || []).filter((w) => w.timestamp !== null)
+    .slice(plies > 0 ? -plies : 0);
+
+  const scale = wrap.clientWidth / SHORT_W;
+  const [bx, by, bw, bh] = state.short_board_rect || defaultBoardRect();
+  const boardHost = $("spBoards");
+  boardHost.style.cssText = `position:absolute;left:${bx * scale}px;top:${by * scale}px;
+      width:${bw * scale}px;height:${bh * scale}px`;
+
+  // preload the position right before AND right after each included ply, so the
+  // board can flip between them the instant playback crosses that ply's timestamp
+  const neededPlies = new Set();
+  included.forEach((w) => { neededPlies.add(Math.max(0, w.ply - 1)); neededPlies.add(w.ply); });
+  boardHost.innerHTML = "";
+  [...neededPlies].sort((a, b) => a - b).forEach((p) => {
+    const img = document.createElement("img");
+    img.className = "spBoard"; img.dataset.ply = p;
+    img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0";
+    img.src = `/api/projects/${current}/board?ply=${p}&width=500&_=${lookStamp}`;
+    boardHost.appendChild(img);
+  });
+
+  // One caption image per timing group. The cache-buster is derived from the
+  // captions themselves, not the clock, so a redraw re-uses the cached images
+  // instead of re-fetching and blinking. The host is rebuilt whenever it no longer
+  // holds the right number of layers -- draw() hands us a brand new empty div on
+  // every redraw, so comparing the key alone would leave the captions missing.
+  const textGroups = shortTextGroups(state.short_texts);
+  const textKey = JSON.stringify(state.short_texts || []);
+  const textHost = $("spTexts");
+  if (textHost && (textKey !== spTextKey || textHost.childElementCount !== textGroups.length)) {
+    spTextKey = textKey;
+    const stamp = [...textKey].reduce((hash, ch) => (hash * 31 + ch.charCodeAt(0)) | 0, 7);
+    textHost.innerHTML = "";
+    textGroups.forEach((group) => {
+      const img = document.createElement("img");
+      img.className = "spText";
+      img.dataset.start = group.start;
+      img.dataset.end = group.end === null ? "" : group.end;
+      img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;opacity:0";
+      img.src = `/api/projects/${current}/short-text-preview?width=300`
+        + `&only=${group.indices.join(",")}&_=${stamp}`;
+      textHost.appendChild(img);
+    });
+  }
+
+  spFramePlies = plies;
+  wireShortScrub();
+
+  // same windows across a redraw -> carry the playhead over; different windows
+  // (plies/pad/tail changed) -> start the new cut from the top
+  const windowsKey = JSON.stringify(windows);
+  const resume = windowsKey === spWindowsKey;
+  spWindowsKey = windowsKey;
+  startShortPreviewLoop(windows, resume);
+}
+
+function shortPreviewDuration() {
+  return spWindows.reduce((sum, [a, b]) => sum + (b - a), 0);
+}
+
+// Elapsed time in the *cut* (what the viewer of short.mp4 sees) -> the source
+// timestamp that plays there. The windows are contiguous in the output but
+// scattered across the broadcast, so scrubbing has to walk them in order.
+function seekShortPreview(elapsed) {
+  const video = $("spVideo");
+  if (!video || !spWindows.length) return;
+  const total = shortPreviewDuration();
+  let left = Math.min(Math.max(0, elapsed), Math.max(0, total - 0.05));
+  let index = spWindows.length - 1;
+  for (let i = 0; i < spWindows.length; i++) {
+    const span = spWindows[i][1] - spWindows[i][0];
+    if (left < span) { index = i; break; }
+    if (i < spWindows.length - 1) left -= span;
+  }
+  const span = spWindows[index][1] - spWindows[index][0];
+  left = Math.min(left, Math.max(0, span - 0.05));
+  spIdx = index;
+  spLastElapsed = elapsed;                  // no pops for windows the scrub skipped
+  spTime = spWindows[index][0] + left;
+  try { video.currentTime = spTime; } catch {}
+  if (spAudioEl && state.short_music) {
+    try { spAudioEl.currentTime = (state.short_music_offset || 0) + elapsed; } catch {}
+  }
+  paintShortProgress(elapsed, total);
+}
+
+function paintShortProgress(elapsed, total) {
+  const percent = total > 0 ? Math.min(100, Math.max(0, (elapsed / total) * 100)) : 0;
+  const fill = $("spFill"), handle = $("spHandle"), label = $("spTime");
+  if (fill) fill.style.width = percent + "%";
+  if (handle) handle.style.left = percent + "%";
+  if (label) label.textContent = `${fmtTime(elapsed)} / ${fmtTime(total)}`;
+}
+
+// Dragging works paused as well as playing: the tick loop reads the video's own
+// currentTime, so it just picks up wherever the scrub put it.
+function wireShortScrub() {
+  const bar = $("spBar");
+  if (!bar) return;
+  const seekAt = (event) => {
+    const box = bar.getBoundingClientRect();
+    if (!box.width) return;
+    const fraction = Math.min(1, Math.max(0, (event.clientX - box.left) / box.width));
+    seekShortPreview(fraction * shortPreviewDuration());
+  };
+  bar.onpointerdown = (event) => {
+    spScrubbing = true;
+    try { bar.setPointerCapture(event.pointerId); } catch {}
+    seekAt(event);
+    event.preventDefault();
+  };
+  bar.onpointermove = (event) => { if (spScrubbing) seekAt(event); };
+  const release = (event) => {
+    if (!spScrubbing) return;
+    spScrubbing = false;
+    try { bar.releasePointerCapture(event.pointerId); } catch {}
+  };
+  bar.onpointerup = release;
+  bar.onpointercancel = release;
+}
+
+// Mirrors what short_clip() actually renders: rather than playing straight through,
+// playback jumps from window to window (skipping the "thinking time" between
+// moves), so the preview's pacing matches the real output instead of just showing
+// the untouched broadcast.
+function startShortPreviewLoop(windows, resume = false) {
+  clearInterval(spRafId);
+  spLoopActive = false;
+  spWindows = windows;
+  const video = $("spVideo");
+  if (!video || !windows.length) return;
+  spLoopActive = true;
+  const music = state.short_music ? ensureShortAudio() : null;
+  if (music) {
+    const src = `/api/sounds/${encodeURIComponent(state.short_music)}`;
+    if (music.dataset.src !== src) { music.dataset.src = src; music.src = src; }
+  }
+  const totalDuration = shortPreviewDuration();
+  // resuming: drop back into whichever window the old playhead was inside
+  spIdx = 0;
+  if (resume && spTime !== null) {
+    const found = windows.findIndex(([a, b]) => spTime >= a && spTime < b);
+    if (found >= 0) spIdx = found;
+  }
+  const seekTo = (i, at = null) => {
+    spIdx = i;
+    try { video.currentTime = at !== null ? at : windows[spIdx][0]; } catch {}
+  };
+  const start = () => {
+    if (!resume) spLastElapsed = -1;        // a caption at 0s still gets its pop
+    seekTo(spIdx, resume && spTime !== null ? spTime : null);
+    if (!resume && music) { try { music.currentTime = state.short_music_offset || 0; } catch {} }
+    if (spPlaying) {
+      video.play().catch(() => {});
+      if (music) music.play().catch(() => {});
+    }
+    const button = $("spPlay");
+    if (button) button.textContent = spPlaying ? "⏸ Jeda" : "▶ Putar";
+  };
+  if (video.readyState >= 1) start();
+  else video.addEventListener("loadedmetadata", start, { once: true });
+
+  const tick = () => {
+    if (!video.isConnected) { clearInterval(spRafId); spLoopActive = false; return; }
+    const now = video.currentTime;
+    spTime = now;
+    // hands off while the user drags the bar -- seekShortPreview owns spIdx then
+    if (!spScrubbing && !video.seeking &&
+        (now >= windows[spIdx][1] || now < windows[spIdx][0] - 0.5)) {
+      const next = spIdx + 1 < windows.length ? spIdx + 1 : 0;
+      if (next === 0) {
+        spLastElapsed = -1;               // looping back: a caption at 0s pops again
+        if (music) { try { music.currentTime = state.short_music_offset || 0; } catch {} }
+      }
+      seekTo(next);
+      return;
+    }
+    let elapsed = 0;
+    for (let i = 0; i < spIdx; i++) elapsed += windows[i][1] - windows[i][0];
+    elapsed += Math.max(0, now - windows[spIdx][0]);
+
+    let shown = 0;
+    for (const w of state.waypoints || []) {
+      if (w.timestamp !== null && w.timestamp <= now) shown = w.ply;
+    }
+    document.querySelectorAll(".spBoard").forEach((img) => {
+      img.style.opacity = Number(img.dataset.ply) === shown ? 1 : 0;
+    });
+    document.querySelectorAll(".spText").forEach((img) => {
+      const from = Number(img.dataset.start) || 0;
+      const until = img.dataset.end === "" ? Infinity : Number(img.dataset.end);
+      img.style.opacity = elapsed >= from && elapsed <= until ? 1 : 0;
+      // only while actually playing forward: a scrub or a paused nudge would
+      // otherwise fire a pop on every tick it happened to straddle
+      if (spPlaying && !spScrubbing && spLastElapsed < from && elapsed >= from) playCaptionPop();
+    });
+    spLastElapsed = elapsed;
+    // while dragging, the bar is already painted by seekShortPreview from the
+    // pointer position -- repainting from a currentTime that hasn't landed yet
+    // would make the handle stutter backwards under the cursor
+    if (!spScrubbing) paintShortProgress(elapsed, totalDuration);
+    if (music && !music.seeking && !spScrubbing) {
+      const target = (state.short_music_offset || 0) + elapsed;
+      if (Math.abs(music.currentTime - target) > 0.35) music.currentTime = target;
+    }
+  };
+  spRafId = setInterval(tick, 40);
+  tick();
+}
+
+function toggleShortPreviewPlay() {
+  const video = $("spVideo");
+  if (!video) return;
+  const button = $("spPlay");
+  spPlaying = video.paused;                 // remembered so a redraw resumes as-is
+  if (spPlaying) {
+    video.play().catch(() => {});
+    if (spAudioEl) spAudioEl.play().catch(() => {});
+  } else {
+    video.pause();
+    if (spAudioEl) spAudioEl.pause();
+  }
+  if (button) button.textContent = spPlaying ? "⏸ Jeda" : "▶ Putar";
+}
+
+function wireShortPicker() {
   const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
   let start = null;
   const at = (e) => {
@@ -433,13 +1195,353 @@ function wireRectPicker() {
     box.style.width = Math.abs(a[0] - b[0]) + "px";
     box.style.height = Math.abs(a[1] - b[1]) + "px";
   };
-  wrap.onmousedown = (e) => { start = at(e); pick = null; $("pickok").disabled = true; e.preventDefault(); };
+  // "Tambah teks" stays live without a fresh drag once a shared box exists;
+  // "Pindahkan kotak" is the one that needs one.
+  const syncButtons = () => {
+    const spec = SHORT_LAYERS[shortLayer];
+    const ok = $("pickok"), move = $("pickmove");
+    if (ok) ok.disabled = !(pick || (spec.withText && spec.get(state).length));
+    if (move) move.disabled = !pick;
+  };
+  wrap.onmousedown = (e) => { start = at(e); pick = null; syncButtons(); e.preventDefault(); };
   wrap.onmousemove = (e) => { if (start) place(start, at(e)); };
   window.onmouseup = (e) => {
     if (!start) return;
-    const end = at(e), scale = state.width / img.clientWidth;
+    const scale = SHORT_W / img.clientWidth;
+    const end = at(e);
     const rect = [Math.min(start[0], end[0]), Math.min(start[1], end[1]),
                   Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])];
+    start = null;
+    if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; syncButtons(); return; }
+    pick = rect.map((v) => Math.round(v * scale));
+    syncButtons();
+    $("pickmsg").textContent = `${pick[2]}×${pick[3]} px`;
+  };
+  if (img.complete) drawExistingShort(); else img.onload = drawExistingShort;
+}
+
+function drawExistingShort() {
+  const img = $("pickimg"), host = $("pickexisting");
+  if (!img || !host) return;
+  const px = img.clientWidth / SHORT_W;
+  const spec = SHORT_LAYERS[shortLayer];
+  const items = spec.get(state);
+  host.innerHTML = "";
+
+  const place = (rect, label, remove) => {
+    const box = document.createElement("div");
+    box.className = "shortBox";
+    box.style.cssText = `position:absolute;left:${rect[0] * px}px;top:${rect[1] * px}px;
+      width:${rect[2] * px}px;height:${rect[3] * px}px;border:2px solid ${spec.colour};
+      background:${spec.colour}2e;font-size:10px;color:#fff;padding:2px;box-sizing:border-box;
+      overflow:hidden;cursor:move`;
+    box.title = "Tarik kotak ini untuk menggeser posisinya";
+    box.textContent = label;
+    if (remove !== null) {
+      const button = document.createElement("button");
+      button.textContent = "x";
+      button.title = "Hapus kotak ini";
+      button.style.cssText = `position:absolute;top:-11px;right:-11px;width:20px;height:20px;
+        padding:0;border-radius:50%;font-size:11px;line-height:1;cursor:pointer`;
+      button.onclick = () => removeShortItem(remove);
+      box.appendChild(button);
+    }
+    host.appendChild(box);
+    wireShortBoxDrag(box, rect, px);
+  };
+
+  // Captions all sit in one shared box, so there is exactly one to draw however
+  // many there are; per-caption controls live in the list below instead.
+  if (spec.withText) {
+    if (items[0]?.rect) place(items[0].rect, `${items.length} teks`, null);
+    return;
+  }
+  items.forEach((rect, i) => place(rect, "", i));
+}
+
+// Drag a box that already exists to reposition it, rather than having to redraw
+// it from scratch to nudge it a few pixels. The mousedown stops here so the
+// wrap's own "draw a new box" handler never sees it -- otherwise every attempt to
+// move a box would start drawing a replacement over the top of it.
+function wireShortBoxDrag(box, rect, px) {
+  box.onmousedown = (event) => {
+    if (event.target.tagName === "BUTTON") return;
+    event.stopPropagation();
+    event.preventDefault();
+    const from = [event.clientX, event.clientY];
+    const spec = SHORT_LAYERS[shortLayer];
+    let moved = null;
+
+    const drag = (e) => {
+      const x = Math.round(Math.min(Math.max(0, rect[0] + (e.clientX - from[0]) / px),
+                                    SHORT_W - rect[2]));
+      const y = Math.round(Math.min(Math.max(0, rect[1] + (e.clientY - from[1]) / px),
+                                    SHORT_H - rect[3]));
+      moved = [x, y, rect[2], rect[3]];
+      box.style.left = `${x * px}px`;
+      box.style.top = `${y * px}px`;
+      const message = $("pickmsg");
+      if (message) message.textContent = `${x}, ${y} px`;
+      // the board is a live layer in the preview, so it can follow the drag
+      // itself; captions are baked into a server-rendered PNG and can only catch
+      // up once the move is saved
+      const host = $("spBoards"), wrap = $("shortPreviewWrap");
+      if (!spec.withText && host && wrap) {
+        const scale = wrap.clientWidth / SHORT_W;
+        host.style.left = `${x * scale}px`;
+        host.style.top = `${y * scale}px`;
+      }
+    };
+
+    const drop = async () => {
+      window.removeEventListener("mousemove", drag);
+      window.removeEventListener("mouseup", drop);
+      if (!moved || (moved[0] === rect[0] && moved[1] === rect[1])) return;
+      try {
+        if (spec.withText) {
+          await spec.save(spec.get(state).map((item) => ({ ...item, rect: moved })));
+        } else {
+          await spec.save([moved]);
+        }
+        refresh();
+      } catch (e) { alert(e.message); }
+    };
+
+    window.addEventListener("mousemove", drag);
+    window.addEventListener("mouseup", drop);
+  };
+}
+
+async function addShortItem() {
+  const spec = SHORT_LAYERS[shortLayer];
+  try {
+    if (spec.withText) {
+      // every caption lives in the same box: the first one drawn. A fresh drag
+      // moves that shared box, so the captions never drift apart on screen.
+      const items = spec.get(state);
+      const rect = pick || items[0]?.rect;
+      if (!rect) { $("pickmsg").textContent = "Tarik dulu kotaknya di gambar sebelah kiri."; return; }
+      const input = $("shorttext"), sizeInput = $("shorttextsize");
+      const text = input?.value.trim();
+      if (!text) { $("pickmsg").textContent = "Isi teksnya dulu di kolom sebelah."; return; }
+      const scale = Math.min(2.5, Math.max(0.4, parseFloat(sizeInput?.value) || 1.0));
+      const startInput = $("shorttextstart"), endInput = $("shorttextend");
+      const start = Math.max(0, parseFloat(startInput?.value) || 0);
+      const endRaw = (endInput?.value ?? "").trim();
+      const end = endRaw === "" ? null : Math.max(0, parseFloat(endRaw) || 0);
+      const kept = items.map((item) => ({ ...item, rect }));
+      await spec.save([...kept, { text, rect, scale, start, end }]);
+      input.value = ""; if (sizeInput) sizeInput.value = "1.0";
+      if (startInput) startInput.value = "0";
+      if (endInput) endInput.value = "";
+    } else {
+      if (!pick) return;
+      await spec.save([pick]);
+    }
+    pick = null; refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// Move the shared caption box without adding anything to it.
+async function moveShortTextBox() {
+  if (!pick) return;
+  const spec = SHORT_LAYERS.text;
+  try {
+    await spec.save(spec.get(state).map((item) => ({ ...item, rect: pick })));
+    pick = null; refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// Every caption with its own on-screen window, editable in place. The boxes drawn
+// over the frame stay the place to move and size a caption; timing needs numbers,
+// and numbers need room the box doesn't have.
+function shortTextTable(items) {
+  const total = estimateShortDuration(shortOpts.plies, shortOpts.pad, shortOpts.tail);
+  const rows = items.map((item, i) => {
+    const start = Number(item.start) || 0;
+    const end = item.end === null || item.end === undefined ? "" : Number(item.end);
+    const late = start >= total ? ` <span class="tag guess">di luar durasi</span>` : "";
+    return `<tr>
+      <td style="color:var(--muted);width:18px">${i + 1}</td>
+      <td style="max-width:130px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+          title="${escape_(item.text)}">${escape_(item.text)}${late}</td>
+      <td><input type="number" min="0" step="0.5" value="${start}" style="width:56px;padding:4px 5px"
+                 title="Muncul dari detik ke-berapa"
+                 onchange="setShortTextTime(${i}, 'start', this.value)"></td>
+      <td><input type="number" min="0" step="0.5" value="${end}" placeholder="akhir"
+                 style="width:56px;padding:4px 5px"
+                 title="Hilang di detik ke-berapa. Kosongkan = sampai habis"
+                 onchange="setShortTextTime(${i}, 'end', this.value)"></td>
+      <td><input type="number" min="0.4" max="2.5" step="0.1" value="${(item.scale ?? 1.0).toFixed(1)}"
+                 style="width:56px;padding:4px 5px"
+                 title="Pengali ukuran teks -- 1.0 = pas otomatis di kotak"
+                 onchange="setShortTextScale(${i}, this.value)"></td>
+      <td><button onclick="removeShortText(${i})" title="Hapus caption ini"
+                  style="padding:2px 8px;font-size:12px">x</button></td>
+    </tr>`;
+  }).join("");
+  return `<table style="margin-top:11px;width:100%;font-size:12px">
+    <tr class="hint"><td></td><td>teks</td><td>dari</td><td>sampai</td><td>ukuran</td><td></td></tr>
+    ${rows}
+  </table>
+  <p class="hint" style="margin:6px 0 0">Semua caption memakai satu kotak yang sama; ukurannya
+    diatur sendiri-sendiri di sini. Detik dihitung di video short-nya sendiri, bukan di video
+    siaran. Total sekarang ${fmtTime(total)}.</p>`;
+}
+
+async function setShortTextTime(index, field, value) {
+  const spec = SHORT_LAYERS.text;
+  const parsed = String(value).trim() === "" ? null : Math.max(0, parseFloat(value) || 0);
+  const items = spec.get(state).map((item, i) => i === index ? { ...item, [field]: parsed } : item);
+  try {
+    await spec.save(items);
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function removeShortText(index) {
+  const spec = SHORT_LAYERS.text;
+  try {
+    await spec.save(spec.get(state).filter((_, i) => i !== index));
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// Captions bucketed by the window they share -- mirrors core/render.py's
+// short_text_groups() so the preview stacks exactly the layers the render will.
+function shortTextGroups(texts) {
+  const groups = new Map();
+  (texts || []).forEach((item, index) => {
+    const start = Math.max(0, Number(item.start) || 0);
+    let end = (item.end === null || item.end === undefined || item.end === "")
+      ? null : Number(item.end);
+    if (end !== null && !(end > start)) end = null;
+    const key = start + "|" + (end === null ? "" : end);
+    if (!groups.has(key)) groups.set(key, { start, end, indices: [] });
+    groups.get(key).indices.push(index);
+  });
+  return [...groups.values()];
+}
+
+async function setShortTextScale(index, value) {
+  const spec = SHORT_LAYERS.text;
+  const scale = Math.min(2.5, Math.max(0.4, parseFloat(value) || 1.0));
+  const items = spec.get(state).map((item, i) => i === index ? { ...item, scale } : item);
+  try {
+    await spec.save(items);
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function removeShortItem(index) {
+  const spec = SHORT_LAYERS[shortLayer];
+  await spec.save(spec.get(state).filter((_, i) => i !== index));
+  refresh();
+}
+
+async function clearShortLayer() {
+  await SHORT_LAYERS[shortLayer].save([]);
+  refresh();
+}
+
+function wirePicker() {
+  if (picking !== "layout") wireQuadPicker();
+  else if (layer === "zoom") wireZoomPicker();
+  else wireRectPicker();
+}
+
+function wireZoomPicker() {
+  const wrap = $("pickwrap"), img = $("pickimg"), box = $("zoombox");
+  const zoom = { percent: 100, x: 0.5, y: 0.5, ...state.source_zoom };
+  let dragging = false;
+  const place = () => {
+    const factor = zoom.percent / 100;
+    const w = img.clientWidth / factor, h = img.clientHeight / factor;
+    const left = Math.min(Math.max(zoom.x * img.clientWidth - w / 2, 0), img.clientWidth - w);
+    const top = Math.min(Math.max(zoom.y * img.clientHeight - h / 2, 0), img.clientHeight - h);
+    box.style.left = left + "px"; box.style.top = top + "px";
+    box.style.width = w + "px"; box.style.height = h + "px";
+  };
+  const at = (e) => {
+    const b = img.getBoundingClientRect();
+    return [Math.min(Math.max(e.clientX - b.left, 0), b.width),
+            Math.min(Math.max(e.clientY - b.top, 0), b.height)];
+  };
+  const moveTo = (p) => {
+    zoom.x = p[0] / img.clientWidth;
+    zoom.y = p[1] / img.clientHeight;
+    place();
+  };
+  wrap.onmousedown = (e) => { dragging = true; moveTo(at(e)); e.preventDefault(); };
+  wrap.onmousemove = (e) => { if (dragging) moveTo(at(e)); };
+  window.onmouseup = () => { if (dragging) { dragging = false; saveZoom(zoom); } };
+  if (img.complete) place(); else img.onload = place;
+}
+
+async function saveZoom(zoom) {
+  try {
+    await post("source-zoom", { zoom: { percent: zoom.percent, x: zoom.x, y: zoom.y } });
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+function setZoomPercent(value) {
+  const zoom = { percent: 100, x: 0.5, y: 0.5, ...state.source_zoom };
+  zoom.percent = Math.min(500, Math.max(100, Number(value) || 100));
+  saveZoom(zoom);
+}
+
+async function resetZoom() {
+  await post("source-zoom", { zoom: null });
+  refresh();
+}
+
+function wireRectPicker() {
+  const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
+  const spec = LAYERS[layer];
+  const fixedSize = spec.pairSize && !spec.get(state).length ? spec.pairSize(state) : null;
+  let start = null;
+  const at = (e) => {
+    const b = img.getBoundingClientRect();
+    return [Math.min(Math.max(e.clientX - b.left, 0), b.width),
+            Math.min(Math.max(e.clientY - b.top, 0), b.height)];
+  };
+  const place = (a, b) => {
+    box.style.display = "block";
+    box.style.left = Math.min(a[0], b[0]) + "px";
+    box.style.top = Math.min(a[1], b[1]) + "px";
+    box.style.width = Math.abs(a[0] - b[0]) + "px";
+    box.style.height = Math.abs(a[1] - b[1]) + "px";
+  };
+  // Nameplates: once one side has a box, the other inherits its size and can only
+  // be dragged into position -- no need to redraw the same rectangle from scratch.
+  const placeFixed = (center) => {
+    const toDisplay = img.clientWidth / state.width;
+    const w = fixedSize[0] * toDisplay, h = fixedSize[1] * toDisplay;
+    const left = Math.min(Math.max(center[0] - w / 2, 0), img.clientWidth - w);
+    const top = Math.min(Math.max(center[1] - h / 2, 0), img.clientHeight - h);
+    box.style.display = "block";
+    box.style.left = left + "px"; box.style.top = top + "px";
+    box.style.width = w + "px"; box.style.height = h + "px";
+    return [left, top, w, h];
+  };
+  wrap.onmousedown = (e) => {
+    start = at(e); pick = null; $("pickok").disabled = true;
+    if (fixedSize) placeFixed(start);
+    e.preventDefault();
+  };
+  wrap.onmousemove = (e) => {
+    if (!start) return;
+    if (fixedSize) placeFixed(at(e)); else place(start, at(e));
+  };
+  window.onmouseup = (e) => {
+    if (!start) return;
+    const scale = state.width / img.clientWidth;
+    const rect = fixedSize ? placeFixed(at(e)) : (() => {
+      const end = at(e);
+      return [Math.min(start[0], end[0]), Math.min(start[1], end[1]),
+              Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])];
+    })();
     start = null;
     if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; return; }
     pick = rect.map((v) => Math.round(v * scale));
@@ -776,6 +1878,427 @@ async function run(what) {
     body: what === "render" ? JSON.stringify({ full_video: true }) : "{}",
   });
   pollBusy();
+}
+
+// The long video only: board.mp4 + full-video.mp4. The short has its own button,
+// so nothing here depends on the short's layout or its ply/jeda/ekor boxes.
+async function runRender() {
+  try {
+    // save first: the endpoint renders the project's stored lead-in, so an edit left
+    // unsaved in the box can never quietly render at the old start point
+    await post("lead-in", { seconds: leadIn });
+    await api(`/api/projects/${current}/render`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ full_video: true }),
+    });
+    pollBusy();
+  } catch (e) { alert(e.message); }
+}
+
+// The short only: the long video is never touched. board.mp4 is reused when an
+// earlier render left one with the same look, so trying another plies/jeda/ekor
+// combination costs seconds; the server rebuilds it by itself when it is missing or
+// the look changed. Without a short layout the short is the bare centred default
+// with no captions, so ask rather than quietly produce that.
+async function runShort() {
+  const { plies, pad, tail } = shortParams();
+  if (!state.has_short_layout && !confirm(
+      "Layout short belum diatur (posisi papan / teks caption belum ada).\n\n" +
+      "OK  = tetap render pakai posisi papan default\n" +
+      "Batal = buka panel layout short dulu")) {
+    if (picking !== "short") toggleShort();
+    return;
+  }
+  try {
+    // save first: the endpoint renders the project's stored cut, so an edit left
+    // unsaved in the boxes can never quietly render at the old length
+    await post("short-cut", { plies, pad, tail });
+    await api(`/api/projects/${current}/short`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: "{}",
+    });
+    pollBusy();
+  } catch (e) { alert(e.message); }
+}
+
+// ---------------------------------------------------------------- thumbnail
+
+// Rough cost of one paid edit at 1280x720, in USD, by quality. An ESTIMATE only:
+// OpenAI publishes a per-token rate, not tokens-per-image, so these are derived
+// from third-party per-image figures scaled to this canvas. The panel shows the
+// real token counts from the API's own usage block once a call has been made --
+// trust those, not this.
+const THUMB_RATE = 16500;                 // rupiah per USD, for a readable hint
+let thumbAt = 0, thumbPrompt = "", thumbPromptDirty = false;
+let thumbHasKey = null, thumbStamp = 0, thumbQuality = "high";
+let thumbModels = [], thumbModel = "";
+
+function thumbModelRecord(id) { return thumbModels.find((m) => m.id === (id ?? thumbModel)); }
+
+// The per-edit price OpenRouter quotes for this model at 1280x720. Flagged as
+// approximate for token-billed models, where the count -- and so the price --
+// swings with the quality setting. The real figure arrives in usage.cost.
+function thumbCostHint(id) {
+  const m = thumbModelRecord(id);
+  if (!m || m.usd == null) return "harga tidak diketahui";
+  const rp = Math.round(m.usd * THUMB_RATE).toLocaleString("id-ID");
+  return `${m.exact ? "" : "≈ "}$${m.usd.toFixed(4)} · Rp ${rp}${m.exact ? "" : " (ikut kualitas)"}`;
+}
+
+// Every token the project has actually been billed for, summed across attempts.
+// Reads whatever field names the API used rather than assuming a shape -- image
+// models have changed these before.
+function thumbSpent(s) {
+  let usd = 0, calls = 0, unknown = 0;
+  for (const entry of s.thumb_usage || []) {
+    const cost = (entry.usage || {}).cost;
+    if (typeof cost === "number") usd += cost; else unknown += 1;
+    calls += 1;
+  }
+  return { usd, calls, unknown };
+}
+
+async function toggleThumb() {
+  const closing = picking === "thumb";
+  picking = closing ? false : "thumb";
+  pick = null;
+  if (!closing) {
+    thumbAt = state.thumb_time ?? Math.round((state.duration || 0) / 2);
+    thumbQuality = state.thumb_quality || "high";
+    thumbPrompt = state.thumb_prompt || "";
+    thumbPromptDirty = false;
+    if (thumbHasKey === null) {
+      try { thumbHasKey = (await api("/api/openrouter-key")).has_key; } catch (e) { thumbHasKey = false; }
+    }
+    thumbModel = state.thumb_model || thumbModel;
+    if (!thumbModels.length) await loadThumbModels(false);
+  }
+  draw();
+}
+
+function setThumbQuality(value) { thumbQuality = value; draw(); }
+
+function setThumbAt(t) {
+  thumbAt = Math.round(Math.min(Math.max(t, 0), state.duration || t));
+  const img = $("thumbFrame"), box = $("thumbAtInput");
+  if (img) img.src = `/api/projects/${current}/frame?t=${thumbAt}&width=460`;
+  if (box && document.activeElement !== box) box.value = fmtTime(thumbAt);
+}
+
+function setThumbAtInput() {
+  const parts = ($("thumbAtInput").value.trim().split(":") || []).map(Number);
+  if (!parts.length || parts.some(Number.isNaN)) return;
+  setThumbAt(parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0]);
+}
+
+// Freeze the chosen second as the file that actually gets uploaded, so a later
+// retry sends the frame the user approved rather than re-reading the video.
+async function useThumbFrame() {
+  try {
+    await post("thumb-frame", { seconds: thumbAt });
+    thumbStamp = Date.now();
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+
+function onThumbPrompt(value) { thumbPrompt = value; thumbPromptDirty = true; refreshThumbPromptButton(); }
+
+function refreshThumbPromptButton() {
+  const button = $("thumbPromptSave");
+  if (!button) return;
+  button.disabled = !thumbPromptDirty;
+  button.className = thumbPromptDirty ? "primary" : "";
+  button.textContent = thumbPromptDirty ? "Simpan prompt" : "Tersimpan";
+}
+
+async function saveThumbPrompt(reset) {
+  try {
+    const body = await post("thumb-prompt", { prompt: reset ? "" : thumbPrompt });
+    thumbPrompt = body.thumb_prompt;
+    thumbPromptDirty = false;
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// Fetching prices costs one request per model, so the server caches the list and
+// only refetches when asked. "Segarkan" is how a newly released model shows up.
+async function loadThumbModels(refresh) {
+  try {
+    const body = await api(`/api/openrouter/models${refresh ? "?refresh=true" : ""}`);
+    thumbModels = body.models || [];
+    if (!thumbModelRecord(thumbModel)) thumbModel = body.default;
+  } catch (e) { thumbModels = []; }
+}
+
+async function refreshThumbModels() {
+  await loadThumbModels(true);
+  draw();
+}
+
+function setThumbModel(id) {
+  thumbModel = id;
+  const allowed = thumbModelRecord(id)?.qualities;
+  if (allowed && !allowed.includes(thumbQuality)) thumbQuality = allowed.includes("high") ? "high" : allowed[0];
+  draw();
+}
+
+async function saveOpenRouterKey() {
+  const key = $("thumbKey").value.trim();
+  if (!key) return;
+  try {
+    thumbHasKey = (await api("/api/openrouter-key", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key }),
+    })).has_key;
+    draw();
+  } catch (e) { alert(e.message); }
+}
+
+// The one paid step. Saves the prompt first for the same reason the render
+// buttons save their settings first: what runs is what the box shows.
+async function runThumbGenerate() {
+  const model = thumbModel, allowed = thumbModelRecord()?.qualities;
+  const quality = allowed ? thumbQuality : null;
+  if (!confirm(`Kirim frame ini ke ${model}${quality ? ` (kualitas ${quality})` : ""}?\n\n`
+      + `Perkiraan biaya: ${thumbCostHint()}\n`
+      + `Biaya sebenarnya dilaporkan OpenRouter dan tampil di panel setelah selesai.`)) return;
+  try {
+    if (thumbPromptDirty) await post("thumb-prompt", { prompt: thumbPrompt });
+    await post("thumb-generate", { quality, model });
+    thumbPromptDirty = false;
+    pollBusy();
+  } catch (e) { alert(e.message); }
+}
+
+async function pickThumbAttempt(name) {
+  try { await post("thumb-compose", { pick: name }); thumbStamp = Date.now(); await refresh(); }
+  catch (e) { alert(e.message); }
+}
+
+async function deleteThumbAttempt(name) {
+  if (!confirm(`Hapus ${name}? Gambar ini sudah dibayar dan tidak bisa dikembalikan.`)) return;
+  try {
+    await api(`/api/projects/${current}/thumb-attempt/${name}`, { method: "DELETE" });
+    thumbStamp = Date.now();
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+
+// Free: only the PIL text layer is redrawn, the paid picture underneath is reused.
+async function saveThumbTexts(texts) {
+  try {
+    await post("thumb-texts", { texts });
+    if (state.thumb_pick) await post("thumb-compose", {});
+    thumbStamp = Date.now();
+    await refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function addThumbText() {
+  const text = $("thumbText").value.trim();
+  const scale = parseFloat($("thumbTextSize").value) || 1.0;
+  if (!text) { alert("Isi teksnya dulu."); return; }
+  if (!pick) { alert("Tarik dulu kotak tempat teksnya di gambar sebelah kanan."); return; }
+  await saveThumbTexts([...(state.thumb_texts || []), { text, rect: pick, scale }]);
+  pick = null;
+}
+
+async function removeThumbText(index) {
+  await saveThumbTexts((state.thumb_texts || []).filter((_, i) => i !== index));
+}
+
+function thumbPreviewSrc(s) {
+  if (s.has_thumbnail) return `/api/projects/${current}/file/thumbnail.png?_=${thumbStamp}`;
+  if (s.thumb_pick) return `/api/projects/${current}/file/${s.thumb_pick}?_=${thumbStamp}`;
+  if (s.has_thumb_source) return `/api/projects/${current}/file/thumb-source.png?_=${thumbStamp}`;
+  return "";
+}
+
+function thumbEditorCard(s) {
+  const [W, H] = s.thumb_size || [1280, 720];
+  const texts = s.thumb_texts || [];
+  const attempts = s.thumb_attempts || [];
+  const spent = thumbSpent(s);
+  const src = thumbPreviewSrc(s);
+  const quality = thumbModelRecord()?.qualities;
+  const canGenerate = s.has_thumb_source && thumbHasKey && thumbModels.length && !s.busy;
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b style="font-size:13px">Thumbnail</b>
+      <button onclick="toggleThumb()">Tutup</button>
+    </div>
+    <div class="split">
+      <div>
+        <p class="hint" style="margin:0 0 9px"><b>1. Pilih frame.</b> Geser ke momen yang
+          ekspresinya paling kuat — itu yang dikirim ke AI.</p>
+        <img id="thumbFrame" style="display:block;width:460px;max-width:100%;border-radius:7px"
+             src="/api/projects/${current}/frame?t=${thumbAt}&width=460">
+        <div class="row" style="margin-top:8px">
+          <input type="range" min="0" max="${Math.round(s.duration || 0)}" value="${thumbAt}"
+                 style="flex:1;min-width:150px" oninput="setThumbAt(+this.value)">
+          <input id="thumbAtInput" type="text" value="${fmtTime(thumbAt)}" style="width:66px"
+                 placeholder="mm:ss" onchange="setThumbAtInput()">
+          <button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>
+        </div>
+        <p class="hint" style="margin:7px 0 0">${s.has_thumb_source
+          ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.`
+          : "Belum ada frame tersimpan."}</p>
+
+        <p class="hint" style="margin:14px 0 6px"><b>2. Prompt.</b> Nama pemain sudah diisi
+          dari PGN. Teks judul sengaja TIDAK diminta ke AI — digambar sendiri di kanan,
+          supaya ganti kata tidak perlu bayar lagi.</p>
+        <textarea id="thumbPrompt" rows="7" style="width:100%;box-sizing:border-box;
+          font:12px/1.5 ui-monospace,Consolas,monospace;padding:8px;border-radius:7px"
+          oninput="onThumbPrompt(this.value)">${escape_(thumbPrompt)}</textarea>
+        <div class="row" style="margin-top:7px">
+          <button id="thumbPromptSave" onclick="saveThumbPrompt(false)" disabled>Tersimpan</button>
+          <button onclick="saveThumbPrompt(true)" title="Kembali ke prompt bawaan">Default</button>
+        </div>
+
+        <p class="hint" style="margin:14px 0 6px"><b>3. Buat gambarnya.</b> Ini satu-satunya
+          langkah berbayar.</p>
+        ${thumbHasKey === false ? `<div class="row" style="margin-bottom:8px">
+          <input id="thumbKey" type="password" placeholder="sk-or-v1-..." style="flex:1;min-width:170px">
+          <button class="primary" onclick="saveOpenRouterKey()">Simpan key</button>
+        </div>
+        <p class="hint" style="margin:0 0 8px">Key OpenRouter. Disimpan di <code>.env</code>
+          (sudah di-gitignore), bukan di dalam proyek.</p>` : ""}
+        <div class="row" style="margin-bottom:7px">
+          <span class="hint">model</span>
+          <select id="thumbModel" style="padding:7px;flex:1;min-width:210px;max-width:330px"
+                  onchange="setThumbModel(this.value)">
+            ${thumbModels.length ? thumbModels.map((m) => `<option value="${m.id}"
+              ${thumbModel === m.id ? "selected" : ""}>${m.usd == null ? "?"
+                : (m.exact ? "" : "~") + "Rp " + Math.round(m.usd * THUMB_RATE).toLocaleString("id-ID")
+              } — ${m.id}</option>`).join("")
+              : `<option>(daftar model belum terambil)</option>`}
+          </select>
+          <button onclick="refreshThumbModels()" title="Ambil ulang daftar & harga dari OpenRouter">
+            Segarkan</button>
+        </div>
+        <div class="row">
+          ${quality ? `<span class="hint">kualitas</span>
+          <select id="thumbQuality" style="padding:7px" onchange="setThumbQuality(this.value)">
+            ${quality.map((q) => `<option value="${q}"
+              ${thumbQuality === q ? "selected" : ""}>${q}</option>`).join("")}
+          </select>` : `<span class="hint" title="Model ini tidak punya parameter kualitas">
+            (tanpa pilihan kualitas)</span>`}
+          <button class="primary" ${canGenerate ? "" : "disabled"} onclick="runThumbGenerate()"
+                  title="${s.has_thumb_source ? (thumbHasKey ? "Kirim ke OpenRouter"
+                    : "Isi API key dulu") : "Pilih frame dulu"}">Buat dengan AI</button>
+          <span class="hint">${thumbCostHint()}</span>
+        </div>
+        ${spent.calls ? `<p class="hint" style="margin:8px 0 0">Sudah terpakai:
+          <b>${spent.calls}</b> panggilan · <b>$${spent.usd.toFixed(4)}
+          (Rp ${Math.round(spent.usd * THUMB_RATE).toLocaleString("id-ID")})</b> — biaya nyata
+          yang dilaporkan OpenRouter, bukan perkiraan${spent.unknown
+            ? `; ${spent.unknown} panggilan tidak melaporkan biaya` : ""}.</p>` : ""}
+      </div>
+
+      <div>
+        <p class="hint" style="margin:0 0 9px"><b>4. Judul.</b> Tarik kotak di gambar,
+          isi teksnya, lalu Tambah. Gratis dan instan — gambar di bawahnya tidak disentuh.</p>
+        <div class="row" style="margin-bottom:9px">
+          <input id="thumbText" placeholder='Judul, mis. "El Classico!!"' style="flex:1;min-width:150px">
+          <span class="hint">ukuran</span>
+          <input id="thumbTextSize" type="number" min="0.3" max="3" step="0.1" value="1.0"
+                 style="width:56px" title="1.0 = pas otomatis di dalam kotak">
+          <button class="primary" onclick="addThumbText()">Tambah</button>
+        </div>
+        <div id="pickwrap" style="position:relative;display:inline-block;width:460px;max-width:100%;
+             cursor:crosshair;user-select:none;background:#000;border-radius:7px">
+          ${src ? `<img id="pickimg" draggable="false" src="${src}"
+             style="display:block;width:100%;border-radius:7px">`
+            : `<div style="aspect-ratio:${W}/${H};display:flex;align-items:center;
+                 justify-content:center;color:#888;font-size:12px">Pilih frame dulu</div>`}
+          <div id="pickexisting"></div>
+          <div id="pickbox" style="position:absolute;border:2px solid #ff1417;
+               background:#ff141733;display:none;pointer-events:none"></div>
+        </div>
+        <div class="row" style="margin-top:8px">
+          <span id="pickmsg" class="hint"></span>
+        </div>
+        ${texts.length ? `<div class="row" style="margin-top:4px;flex-wrap:wrap">
+          ${texts.map((t, i) => `<span class="hint" style="border:1px solid #444;border-radius:12px;
+            padding:3px 9px">${escape_(t.text)} <a href="#" style="color:#f77;text-decoration:none"
+            onclick="event.preventDefault();removeThumbText(${i})">×</a></span>`).join("")}
+        </div>` : ""}
+
+        ${attempts.length ? `<p class="hint" style="margin:14px 0 6px">
+          <b>Percobaan (${attempts.length}).</b> Klik untuk memakai yang mana. Semuanya disimpan —
+          yang lama sering lebih bagus daripada yang baru.</p>
+        <div class="row" style="flex-wrap:wrap">
+          ${attempts.map((name) => `<div style="position:relative">
+            <img src="/api/projects/${current}/file/${name}?_=${thumbStamp}" width="132"
+                 title="${name}" onclick="pickThumbAttempt('${name}')"
+                 style="display:block;border-radius:6px;cursor:pointer;border:3px solid ${
+                   s.thumb_pick === name ? "var(--accent)" : "transparent"}">
+            <button onclick="deleteThumbAttempt('${name}')" title="Hapus percobaan ini"
+              style="position:absolute;top:-8px;right:-8px;width:20px;height:20px;padding:0;
+              border-radius:50%;font-size:11px;line-height:1;cursor:pointer">x</button>
+          </div>`).join("")}
+        </div>` : ""}
+
+        ${s.has_thumbnail ? `<div class="row" style="margin-top:12px">
+          <a href="/api/projects/${current}/file/thumbnail.png" download="thumbnail.png"
+             style="background:var(--accent);color:#10210c;padding:8px 13px;border-radius:7px;
+             text-decoration:none;font-weight:600;font-size:12px">Unduh thumbnail.png</a>
+          <span class="hint">${W}×${H}, siap diunggah</span>
+        </div>` : ""}
+      </div>
+    </div>
+  </div>`;
+}
+
+// Same drag-a-box interaction as the other pickers, in thumbnail pixels: the
+// preview is 16:9 whether it is showing the 1920x1080 source frame or the
+// 1280x720 result, so one scale factor is correct for both.
+function wireThumbPicker() {
+  const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
+  if (!wrap || !img) return;
+  const [W] = state.thumb_size || [1280, 720];
+  let start = null;
+  const at = (e) => {
+    const b = img.getBoundingClientRect();
+    return [Math.min(Math.max(e.clientX - b.left, 0), b.width),
+            Math.min(Math.max(e.clientY - b.top, 0), b.height)];
+  };
+  wrap.onmousedown = (e) => { start = at(e); pick = null; e.preventDefault(); };
+  wrap.onmousemove = (e) => {
+    if (!start) return;
+    const p = at(e);
+    box.style.display = "block";
+    box.style.left = Math.min(start[0], p[0]) + "px";
+    box.style.top = Math.min(start[1], p[1]) + "px";
+    box.style.width = Math.abs(start[0] - p[0]) + "px";
+    box.style.height = Math.abs(start[1] - p[1]) + "px";
+  };
+  window.onmouseup = (e) => {
+    if (!start) return;
+    const end = at(e), scale = W / img.clientWidth;
+    const rect = [Math.min(start[0], end[0]), Math.min(start[1], end[1]),
+                  Math.abs(start[0] - end[0]), Math.abs(start[1] - end[1])];
+    start = null;
+    if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; return; }
+    pick = rect.map((v) => Math.round(v * scale));
+    $("pickmsg").textContent = `${pick[2]}×${pick[3]} px — isi teksnya lalu Tambah`;
+  };
+  if (img.complete) drawExistingThumb(); else img.onload = drawExistingThumb;
+}
+
+function drawExistingThumb() {
+  const img = $("pickimg"), host = $("pickexisting");
+  if (!img || !host) return;
+  const [W] = state.thumb_size || [1280, 720];
+  const px = img.clientWidth / W;
+  host.innerHTML = "";
+  (state.thumb_texts || []).forEach((item) => {
+    const [x, y, w, h] = item.rect;
+    const div = document.createElement("div");
+    div.style.cssText = `position:absolute;left:${x * px}px;top:${y * px}px;width:${w * px}px;
+      height:${h * px}px;border:1px dashed #ff1417aa;pointer-events:none`;
+    host.appendChild(div);
+  });
 }
 
 loadList().then(() => showNew());
