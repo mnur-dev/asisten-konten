@@ -123,7 +123,7 @@ async function api(path, options) {
 }
 
 async function loadList() {
-  const { projects } = await api("/api/projects");
+  const { projects } = await api("api/projects");
   $("list").innerHTML = projects.map((p) => `
     <div class="proj ${p.id === current ? "on" : ""}" onclick="open_('${p.id}')">
       <b>${escape_(p.name || p.id)}</b><i>${p.status}</i>
@@ -141,7 +141,7 @@ async function deleteAllProjects(count) {
   if (!confirm(`Hapus SEMUA ${count} proyek? Semua video dan datanya akan hilang permanen.`)) return;
   if (!confirm("Yakin? Tindakan ini tidak bisa dibatalkan.")) return;
   try {
-    const { deleted, busy } = await api("/api/projects", { method: "DELETE" });
+    const { deleted, busy } = await api("api/projects", { method: "DELETE" });
     current = null; selected = null; clearInterval(timer); clearInterval(rafId);
     $("panel").innerHTML = "";
     await loadList();
@@ -152,7 +152,7 @@ async function deleteAllProjects(count) {
 async function deleteProject(id, name) {
   if (!confirm(`Hapus proyek "${name}"? Semua video dan datanya akan hilang permanen.`)) return;
   try {
-    await api(`/api/projects/${id}`, { method: "DELETE" });
+    await api(`api/projects/${id}`, { method: "DELETE" });
     if (id === current) {
       current = null; selected = null; clearInterval(timer); clearInterval(rafId);
       $("panel").innerHTML = "";
@@ -186,7 +186,7 @@ function showNew() {
 async function create() {
   $("msg").textContent = "";
   try {
-    const { id } = await api("/api/projects", {
+    const { id } = await api("api/projects", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ video_url: $("vp").value, name: $("nm").value, pgn_text: $("pg").value }),
     });
@@ -207,7 +207,7 @@ async function open_(id) {
 
 async function refresh() {
   if (!current) return;
-  state = await api(`/api/projects/${current}`);
+  state = await api(`api/projects/${current}`);
   draw();
 }
 
@@ -301,7 +301,7 @@ function draw() {
             ? ` · sisa ${s.download_progress.eta}` : ""}</p>
       </div>` : ""}
       ${(s.outputs || []).length ? `<div class="row" style="margin-top:11px">` +
-        s.outputs.map((f) => `<a href="/api/projects/${current}/file/${f}" target="_blank"
+        s.outputs.map((f) => `<a href="api/projects/${current}/file/${f}" target="_blank"
           style="color:var(--accent)">${f}</a>`).join(" · ") + `</div>` : ""}
     </div>
     ${s.themes ? lookCard(s) : ""}
@@ -373,7 +373,7 @@ function lookCard(s) {
         ? "border-color:var(--accent);color:var(--accent)" : ""}">${escape_(name)}</button>`;
   return `<div class="card">
     <div class="row" style="align-items:flex-start;gap:18px">
-      <img src="/api/projects/${current}/board?ply=${ply}&width=210&_=${lookStamp}"
+      <img src="api/projects/${current}/board?ply=${ply}&width=210&_=${lookStamp}"
            style="width:210px;border-radius:8px;flex:none">
       <div style="flex:1">
         <div class="hint" style="margin-bottom:6px">Warna papan</div>
@@ -426,7 +426,7 @@ function lookCard(s) {
 }
 
 async function setLook(field, value) {
-  await api(`/api/projects/${current}/look`, {
+  await api(`api/projects/${current}/look`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ [field]: value }),
   });
@@ -436,7 +436,7 @@ async function setLook(field, value) {
 
 async function startEvaluate() {
   try {
-    const result = await api(`/api/projects/${current}/evaluate`, { method: "POST" });
+    const result = await api(`api/projects/${current}/evaluate`, { method: "POST" });
     lookStamp = Date.now();
     if (result.source === "engine") { pollBusy(); return; }
     refresh();
@@ -512,7 +512,7 @@ const SHORT_LAYERS = {
 let shortLayer = "board";
 
 function post(endpoint, body) {
-  return api(`/api/projects/${current}/${endpoint}`, {
+  return api(`api/projects/${current}/${endpoint}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -531,7 +531,7 @@ async function toggleShort() {
     spWindows = []; spFramePlies = null; spScrubbing = false; spTextKey = null;
     if (spAudioEl) spAudioEl.pause();
   } else if (!musicList.length) {
-    try { musicList = (await api("/api/sounds")).music; } catch (e) {}
+    try { musicList = (await api("api/sounds")).music; } catch (e) {}
   }
   draw();
 }
@@ -600,7 +600,7 @@ function pickerCard(s) {
     <div id="pickwrap" style="position:relative;display:inline-block;cursor:${isZoom ? "move" : "crosshair"};
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
-           src="/api/projects/${current}/frame?t=${at}&width=880${isLayout && !isZoom ? "&zoomed=1" : ""}">
+           src="api/projects/${current}/frame?t=${at}&width=880${isLayout && !isZoom ? "&zoomed=1" : ""}">
       <div id="pickexisting"></div>
       ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
            background:${spec.colour}26;pointer-events:none;cursor:move"></div>` : ""}
@@ -633,7 +633,7 @@ function brandUpload(s) {
   return `<div class="row" style="margin-top:12px;align-items:center">
     <input type="file" id="brandfile" accept="image/png,image/jpeg,image/webp"
            onchange="uploadBrand()" style="font-size:12px">
-    ${s.brand_file ? `<img src="/api/projects/${current}/file/${s.brand_file}?_=${lookStamp}"
+    ${s.brand_file ? `<img src="api/projects/${current}/file/${s.brand_file}?_=${lookStamp}"
         style="height:34px;border-radius:4px;background:#0003;padding:3px">
       <button onclick="removeBrand()">Hapus logo</button>`
       : `<span class="hint">belum ada logo diunggah</span>`}
@@ -646,7 +646,7 @@ async function uploadBrand() {
   const body = new FormData();
   body.append("file", input.files[0]);
   try {
-    const response = await fetch(`/api/projects/${current}/brand`, { method: "POST", body });
+    const response = await fetch(`api/projects/${current}/brand`, { method: "POST", body });
     if (!response.ok) throw new Error((await response.json().catch(() => ({}))).detail || response.statusText);
     lookStamp = Date.now();
     refresh();
@@ -654,7 +654,7 @@ async function uploadBrand() {
 }
 
 async function removeBrand() {
-  await api(`/api/projects/${current}/brand`, { method: "DELETE" });
+  await api(`api/projects/${current}/brand`, { method: "DELETE" });
   refresh();
 }
 
@@ -695,7 +695,7 @@ function shortEditorCard(s) {
         <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
              user-select:none;-webkit-user-drag:none;background:#000">
           <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
-               src="/api/projects/${current}/short-frame?plies=${plies}&width=380&_=${lookStamp}">
+               src="api/projects/${current}/short-frame?plies=${plies}&width=380&_=${lookStamp}">
           <div id="pickexisting"></div>
           <div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
                background:${spec.colour}2e;display:none;pointer-events:none"></div>
@@ -718,9 +718,9 @@ function shortEditorCard(s) {
              aspect-ratio:${SHORT_W}/${SHORT_H};background:#000;border-radius:10px;overflow:hidden;
              margin:0 auto">
           <img id="spBackdrop" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
-               src="/api/projects/${current}/short-frame?plies=${plies}&width=300&_=${lookStamp}">
+               src="api/projects/${current}/short-frame?plies=${plies}&width=300&_=${lookStamp}">
           <video id="spVideo" muted playsinline preload="auto"
-                 src="/api/projects/${current}/video"
+                 src="api/projects/${current}/video"
                  style="position:absolute;top:0;left:0;width:100%;height:auto;display:block"></video>
           <div id="spBoards"></div>
           <div id="spTexts" style="position:absolute;inset:0;pointer-events:none"></div>
@@ -768,7 +768,7 @@ function musicCard(s) {
              onchange="saveMusicOffset(this.value)">
       <span id="musicTime" class="hint" style="width:80px">${fmtTime(offset)} / ${fmtTime(duration)}</span>
     </div>
-    <audio id="musicPlayer" src="/api/sounds/${encodeURIComponent(s.short_music)}" preload="none"></audio>` : ""}
+    <audio id="musicPlayer" src="api/sounds/${encodeURIComponent(s.short_music)}" preload="none"></audio>` : ""}
   </div>`;
 }
 
@@ -863,10 +863,10 @@ function applyShortOptions() {
   if (plies !== spFramePlies) {
     const stamp = Date.now();
     const backdrop = $("spBackdrop"), pickimg = $("pickimg");
-    if (backdrop) backdrop.src = `/api/projects/${current}/short-frame?plies=${plies}&width=300&_=${stamp}`;
+    if (backdrop) backdrop.src = `api/projects/${current}/short-frame?plies=${plies}&width=300&_=${stamp}`;
     if (pickimg) {
       pickimg.onload = drawExistingShort;
-      pickimg.src = `/api/projects/${current}/short-frame?plies=${plies}&width=380&_=${stamp}`;
+      pickimg.src = `api/projects/${current}/short-frame?plies=${plies}&width=380&_=${stamp}`;
     }
   }
   wireShortPreview();
@@ -935,7 +935,7 @@ function ensureShortAudio() {
 function playCaptionPop() {
   if (!state?.caption_pop) return;
   if (!spPopEl) {
-    spPopEl = new Audio(`/api/sounds/${encodeURIComponent(state.caption_pop)}`);
+    spPopEl = new Audio(`api/sounds/${encodeURIComponent(state.caption_pop)}`);
     spPopEl.preload = "auto";
   }
   const shot = spPopEl.cloneNode();
@@ -972,7 +972,7 @@ function wireShortPreview() {
     const img = document.createElement("img");
     img.className = "spBoard"; img.dataset.ply = p;
     img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;opacity:0";
-    img.src = `/api/projects/${current}/board?ply=${p}&width=500&_=${lookStamp}`;
+    img.src = `api/projects/${current}/board?ply=${p}&width=500&_=${lookStamp}`;
     boardHost.appendChild(img);
   });
 
@@ -994,7 +994,7 @@ function wireShortPreview() {
       img.dataset.start = group.start;
       img.dataset.end = group.end === null ? "" : group.end;
       img.style.cssText = "position:absolute;inset:0;width:100%;height:100%;opacity:0";
-      img.src = `/api/projects/${current}/short-text-preview?width=300`
+      img.src = `api/projects/${current}/short-text-preview?width=300`
         + `&only=${group.indices.join(",")}&_=${stamp}`;
       textHost.appendChild(img);
     });
@@ -1089,7 +1089,7 @@ function startShortPreviewLoop(windows, resume = false) {
   spLoopActive = true;
   const music = state.short_music ? ensureShortAudio() : null;
   if (music) {
-    const src = `/api/sounds/${encodeURIComponent(state.short_music)}`;
+    const src = `api/sounds/${encodeURIComponent(state.short_music)}`;
     if (music.dataset.src !== src) { music.dataset.src = src; music.src = src; }
   }
   const totalDuration = shortPreviewDuration();
@@ -1647,7 +1647,7 @@ async function saveQuad() {
   if (quadPoints.length !== 4) return;
   const img = $("pickimg"), scale = state.width / img.clientWidth;
   const quad = quadPoints.map(([x, y]) => [Math.round(x * scale), Math.round(y * scale)]);
-  await api(`/api/projects/${current}/board-quad`, {
+  await api(`api/projects/${current}/board-quad`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quad }),
   });
@@ -1655,7 +1655,7 @@ async function saveQuad() {
 }
 
 async function clearQuad() {
-  await api(`/api/projects/${current}/board-quad`, {
+  await api(`api/projects/${current}/board-quad`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quad: null }),
   });
@@ -1673,7 +1673,7 @@ function ensureVideo() {
     videoEl.autoplay = true; videoEl.controls = true;
     videoEl.style.cssText = "width:100%;border-radius:7px;display:block;background:#000";
   }
-  const src = `/api/projects/${current}/video`;
+  const src = `api/projects/${current}/video`;
   if (videoEl.dataset.project !== current) {
     videoEl.dataset.project = current; videoEl.src = src;
   }
@@ -1719,7 +1719,7 @@ function showSegment(start) {
 
   const boards = [base, ...list.map((w) => w.ply)].map((p, index) =>
     `<img class="rvBoard" data-ply="${p}"
-       src="/api/projects/${current}/board?ply=${p}&width=420&_=${lookStamp}"
+       src="api/projects/${current}/board?ply=${p}&width=420&_=${lookStamp}"
        style="${index ? "position:absolute;inset:0;" : ""}opacity:${index ? 0 : 1}">`).join("");
   const marks = list.map((w) => `<div class="rvMark" data-ply="${w.ply}"
        style="position:absolute;top:0;bottom:0;width:2px;background:var(--warn);
@@ -1854,7 +1854,7 @@ function nudgeSelected(delta) {
 }
 
 async function save() {
-  await api(`/api/projects/${current}/waypoints`, {
+  await api(`api/projects/${current}/waypoints`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ waypoints: state.waypoints.map((w) => ({ ply: w.ply, timestamp: w.timestamp })) }),
   });
@@ -1873,7 +1873,7 @@ function pollBusy() {
 
 async function run(what) {
   picking = false;
-  await api(`/api/projects/${current}/${what}`, {
+  await api(`api/projects/${current}/${what}`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: what === "render" ? JSON.stringify({ full_video: true }) : "{}",
   });
@@ -1887,7 +1887,7 @@ async function runRender() {
     // save first: the endpoint renders the project's stored lead-in, so an edit left
     // unsaved in the box can never quietly render at the old start point
     await post("lead-in", { seconds: leadIn });
-    await api(`/api/projects/${current}/render`, {
+    await api(`api/projects/${current}/render`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ full_video: true }),
     });
@@ -1913,7 +1913,7 @@ async function runShort() {
     // save first: the endpoint renders the project's stored cut, so an edit left
     // unsaved in the boxes can never quietly render at the old length
     await post("short-cut", { plies, pad, tail });
-    await api(`/api/projects/${current}/short`, {
+    await api(`api/projects/${current}/short`, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: "{}",
     });
@@ -1968,7 +1968,7 @@ async function toggleThumb() {
     thumbPrompt = state.thumb_prompt || "";
     thumbPromptDirty = false;
     if (thumbHasKey === null) {
-      try { thumbHasKey = (await api("/api/openrouter-key")).has_key; } catch (e) { thumbHasKey = false; }
+      try { thumbHasKey = (await api("api/openrouter-key")).has_key; } catch (e) { thumbHasKey = false; }
     }
     thumbModel = state.thumb_model || thumbModel;
     if (!thumbModels.length) await loadThumbModels(false);
@@ -1981,7 +1981,7 @@ function setThumbQuality(value) { thumbQuality = value; draw(); }
 function setThumbAt(t) {
   thumbAt = Math.round(Math.min(Math.max(t, 0), state.duration || t));
   const img = $("thumbFrame"), box = $("thumbAtInput");
-  if (img) img.src = `/api/projects/${current}/frame?t=${thumbAt}&width=460`;
+  if (img) img.src = `api/projects/${current}/frame?t=${thumbAt}&width=460`;
   if (box && document.activeElement !== box) box.value = fmtTime(thumbAt);
 }
 
@@ -2024,7 +2024,7 @@ async function saveThumbPrompt(reset) {
 // only refetches when asked. "Segarkan" is how a newly released model shows up.
 async function loadThumbModels(refresh) {
   try {
-    const body = await api(`/api/openrouter/models${refresh ? "?refresh=true" : ""}`);
+    const body = await api(`api/openrouter/models${refresh ? "?refresh=true" : ""}`);
     thumbModels = body.models || [];
     if (!thumbModelRecord(thumbModel)) thumbModel = body.default;
   } catch (e) { thumbModels = []; }
@@ -2046,7 +2046,7 @@ async function saveOpenRouterKey() {
   const key = $("thumbKey").value.trim();
   if (!key) return;
   try {
-    thumbHasKey = (await api("/api/openrouter-key", {
+    thumbHasKey = (await api("api/openrouter-key", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ key }),
     })).has_key;
@@ -2078,7 +2078,7 @@ async function pickThumbAttempt(name) {
 async function deleteThumbAttempt(name) {
   if (!confirm(`Hapus ${name}? Gambar ini sudah dibayar dan tidak bisa dikembalikan.`)) return;
   try {
-    await api(`/api/projects/${current}/thumb-attempt/${name}`, { method: "DELETE" });
+    await api(`api/projects/${current}/thumb-attempt/${name}`, { method: "DELETE" });
     thumbStamp = Date.now();
     await refresh();
   } catch (e) { alert(e.message); }
@@ -2108,9 +2108,9 @@ async function removeThumbText(index) {
 }
 
 function thumbPreviewSrc(s) {
-  if (s.has_thumbnail) return `/api/projects/${current}/file/thumbnail.png?_=${thumbStamp}`;
-  if (s.thumb_pick) return `/api/projects/${current}/file/${s.thumb_pick}?_=${thumbStamp}`;
-  if (s.has_thumb_source) return `/api/projects/${current}/file/thumb-source.png?_=${thumbStamp}`;
+  if (s.has_thumbnail) return `api/projects/${current}/file/thumbnail.png?_=${thumbStamp}`;
+  if (s.thumb_pick) return `api/projects/${current}/file/${s.thumb_pick}?_=${thumbStamp}`;
+  if (s.has_thumb_source) return `api/projects/${current}/file/thumb-source.png?_=${thumbStamp}`;
   return "";
 }
 
@@ -2132,7 +2132,7 @@ function thumbEditorCard(s) {
         <p class="hint" style="margin:0 0 9px"><b>1. Pilih frame.</b> Geser ke momen yang
           ekspresinya paling kuat — itu yang dikirim ke AI.</p>
         <img id="thumbFrame" style="display:block;width:460px;max-width:100%;border-radius:7px"
-             src="/api/projects/${current}/frame?t=${thumbAt}&width=460">
+             src="api/projects/${current}/frame?t=${thumbAt}&width=460">
         <div class="row" style="margin-top:8px">
           <input type="range" min="0" max="${Math.round(s.duration || 0)}" value="${thumbAt}"
                  style="flex:1;min-width:150px" oninput="setThumbAt(+this.value)">
@@ -2229,7 +2229,7 @@ function thumbEditorCard(s) {
           yang lama sering lebih bagus daripada yang baru.</p>
         <div class="row" style="flex-wrap:wrap">
           ${attempts.map((name) => `<div style="position:relative">
-            <img src="/api/projects/${current}/file/${name}?_=${thumbStamp}" width="132"
+            <img src="api/projects/${current}/file/${name}?_=${thumbStamp}" width="132"
                  title="${name}" onclick="pickThumbAttempt('${name}')"
                  style="display:block;border-radius:6px;cursor:pointer;border:3px solid ${
                    s.thumb_pick === name ? "var(--accent)" : "transparent"}">
@@ -2240,7 +2240,7 @@ function thumbEditorCard(s) {
         </div>` : ""}
 
         ${s.has_thumbnail ? `<div class="row" style="margin-top:12px">
-          <a href="/api/projects/${current}/file/thumbnail.png" download="thumbnail.png"
+          <a href="api/projects/${current}/file/thumbnail.png" download="thumbnail.png"
              style="background:var(--accent);color:#10210c;padding:8px 13px;border-radius:7px;
              text-decoration:none;font-weight:600;font-size:12px">Unduh thumbnail.png</a>
           <span class="hint">${W}×${H}, siap diunggah</span>
