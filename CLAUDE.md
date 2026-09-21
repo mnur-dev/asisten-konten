@@ -257,10 +257,21 @@ dibagi dengan website produksi. Terukur dengan benchmark ffmpeg identik: decode 
 encode x264 2,4–2,6× lebih lambat dari laptop, dan 7,5× dibanding NVENC yang dipakai
 laptop. Proyeksinya ~18–22 menit mesin per video vs ~5 menit lokal.
 
-**YouTube memblokir IP server ini.** yt-dlp gagal di tahap metadata dengan "Sign in to
-confirm you're not a bot" (diuji 2026-09-21), jadi di server langkah **Buat proyek**
-belum bisa mengunduh apa pun. Varian `--cookies-from-browser firefox` di
-`video.download()` tidak berlaku di sana — tidak ada profil Firefox.
+**YouTube memblokir IP server ini — tanpa cookies.** yt-dlp polos gagal di tahap metadata
+dengan "Sign in to confirm you're not a bot", dan `--cookies-from-browser firefox` tidak
+berlaku di sana karena tidak ada profil browser. Yang membuatnya jalan: `cookies.txt`
+hasil ekspor dari browser yang login, di `/home/admin/web/yt.sukaweb.my.id/private/`
+(di luar `public_html`, tidak dilayani web), ditunjuk lewat env `YT_COOKIES` di unit
+systemd. `video.cookie_file()` mencobanya paling awal. Terukur 2026-09-21: video 808 detik
+terunduh penuh 1920x1080, 272 MB, dalam 74 detik.
+
+- yt-dlp **menulis balik** cookie yang dirotasi ke file itu (`ubuntu` satu grup dengan
+  `admin`, jadi bisa). Itu justru yang membuat sesinya awet — jangan dibuat read-only.
+- Butuh **Deno** untuk challenge JavaScript YouTube: dipasang lewat `pip install deno` ke
+  venv, dan `.venv/bin` dimasukkan ke `PATH` unit systemd supaya yt-dlp menemukannya.
+- Kalau cookie kedaluwarsa, error yang dilaporkan adalah error percobaan cookie, bukan
+  bot-check dari percobaan terakhir — yang terakhir itu pasti gagal dan akan menyembunyikan
+  sebab sebenarnya. Obatnya ekspor ulang dan unggah menimpa file yang sama.
 
 ## Struktur
 
