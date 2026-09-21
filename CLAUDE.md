@@ -44,6 +44,10 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    Di HP semua picker (`#pickwrap`) jalan lewat jembatan sentuh→mouse di akhir script:
    sentuh-tahan 280 ms lalu geser = klik-kiri-tahan; usapan langsung tetap scroll
    halaman; ketuk = klik. Picker baru di dalam `#pickwrap` otomatis ikut.
+   Kotak yang sudah ada (tersimpan maupun baru digambar) bisa digeser lewat
+   `wireBoxDrag()` — tata letak, kotak judul thumbnail; short punya
+   `wireShortBoxDrag()` sendiri. Kotak tersimpan langsung disimpan saat dilepas.
+   Akibatnya kotak baru harus mulai digambar di luar kotak yang sudah ada.
 7. **Render video panjang** — `board.mp4` + `full-video.mp4` (video asli, papan
    overlay-nya ditimpa video board kita; audio asli dibisukan, yang terdengar cuma
    klik langkah kalau suara langkah aktif). Dimulai di langkah pertama, bukan di

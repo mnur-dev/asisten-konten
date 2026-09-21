@@ -1606,6 +1606,43 @@ async function resetZoom() {
   refresh();
 }
 
+// Move an already-drawn box by dragging it, instead of redrawing it to nudge it.
+// `rect` is in frame units (W x H); `px` converts them to displayed pixels. The
+// mousedown stops here so the wrap's own "draw a new box" handler never starts a
+// replacement underneath. `onDrop(moved)` only fires when the box really moved.
+function wireBoxDrag(box, initial, { W, H, px, onMove, onDrop }) {
+  const rect = initial.slice();          // follows the box, so a second drag starts where the first ended
+  box.style.pointerEvents = "auto";
+  box.style.cursor = "move";
+  box.title = "Tarik kotak ini untuk menggeser posisinya";
+  box.onmousedown = (event) => {
+    if (event.target.closest("button")) return;
+    event.stopPropagation();
+    event.preventDefault();
+    const from = [event.clientX, event.clientY];
+    let moved = null;
+    const drag = (e) => {
+      const x = Math.round(Math.min(Math.max(0, rect[0] + (e.clientX - from[0]) / px), W - rect[2]));
+      const y = Math.round(Math.min(Math.max(0, rect[1] + (e.clientY - from[1]) / px), H - rect[3]));
+      moved = [x, y, rect[2], rect[3]];
+      box.style.left = `${x * px}px`;
+      box.style.top = `${y * px}px`;
+      const message = $("pickmsg");
+      if (message) message.textContent = `posisi ${x}, ${y} px`;
+      if (onMove) onMove(moved);
+    };
+    const drop = () => {
+      window.removeEventListener("mousemove", drag);
+      window.removeEventListener("mouseup", drop);
+      if (!moved || (moved[0] === rect[0] && moved[1] === rect[1])) return;
+      rect[0] = moved[0]; rect[1] = moved[1];
+      onDrop(moved);
+    };
+    window.addEventListener("mousemove", drag);
+    window.addEventListener("mouseup", drop);
+  };
+}
+
 function wireRectPicker() {
   const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
   const spec = LAYERS[layer];
@@ -1637,6 +1674,7 @@ function wireRectPicker() {
   };
   wrap.onmousedown = (e) => {
     start = at(e); pick = null; $("pickok").disabled = true;
+    box.style.pointerEvents = "none";
     if (fixedSize) placeFixed(start);
     e.preventDefault();
   };
@@ -1656,7 +1694,9 @@ function wireRectPicker() {
     if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; return; }
     pick = rect.map((v) => Math.round(v * scale));
     $("pickok").disabled = false;
-    $("pickmsg").textContent = `${pick[2]}×${pick[3]} px`;
+    $("pickmsg").textContent = `${pick[2]}×${pick[3]} px — tarik kotaknya untuk menggeser`;
+    wireBoxDrag(box, pick, { W: state.width, H: state.height, px: 1 / scale,
+                             onMove: (moved) => { pick = moved; }, onDrop: (moved) => { pick = moved; } });
   };
   if (img.complete) drawExistingRects();
   else img.onload = drawExistingRects;
@@ -1667,14 +1707,23 @@ function drawExistingRects() {
   if (!img || !host) return;
   const scale = img.clientWidth / state.width;
   const spec = LAYERS[layer];
-  host.innerHTML = spec.get(state).map((r, i) => `
-    <div style="position:absolute;left:${r[0] * scale}px;top:${r[1] * scale}px;
+  const rects = spec.get(state);
+  host.innerHTML = rects.map((r, i) => `
+    <div data-i="${i}" style="position:absolute;left:${r[0] * scale}px;top:${r[1] * scale}px;
          width:${r[2] * scale}px;height:${r[3] * scale}px;border:2px solid ${spec.colour};
          background:${spec.colour}2e">
       <button onclick="removeRect(${i})" title="Hapus kotak ini"
          style="position:absolute;top:-11px;right:-11px;width:20px;height:20px;padding:0;
          border-radius:50%;font-size:11px;line-height:1;cursor:pointer">×</button>
     </div>`).join("");
+  host.querySelectorAll("[data-i]").forEach((box) => {
+    const i = +box.dataset.i;
+    wireBoxDrag(box, rects[i], { W: state.width, H: state.height, px: scale,
+      onDrop: async (moved) => {
+        try { await spec.save(rects.map((r, j) => (j === i ? moved : r))); refresh(); }
+        catch (e) { alert(e.message); }
+      } });
+  });
 }
 
 async function addRect() {
@@ -2387,15 +2436,17 @@ function wireThumbPicker() {
 function drawExistingThumb() {
   const img = $("pickimg"), host = $("pickexisting");
   if (!img || !host) return;
-  const [W] = state.thumb_size || [1280, 720];
+  const [W, H] = state.thumb_size || [1280, 720];
   const px = img.clientWidth / W;
   host.innerHTML = "";
-  (state.thumb_texts || []).forEach((item) => {
+  (state.thumb_texts || []).forEach((item, index) => {
     const [x, y, w, h] = item.rect;
     const div = document.createElement("div");
     div.style.cssText = `position:absolute;left:${x * px}px;top:${y * px}px;width:${w * px}px;
-      height:${h * px}px;border:1px dashed #ff1417aa;pointer-events:none`;
+      height:${h * px}px;border:1px dashed #ff1417aa`;
     host.appendChild(div);
+    wireBoxDrag(div, item.rect, { W, H, px, onDrop: (moved) => saveThumbTexts(
+      state.thumb_texts.map((t, j) => (j === index ? { ...t, rect: moved } : t))) });
   });
 }
 
