@@ -23,3 +23,6 @@ board-layout.jpg
 
 # cached OpenRouter model list (prices change; refetched on demand)
 openrouter-models.json
+
+# exported browser login for yt-dlp (core/video.cookie_file) -- never commit
+cookies.txt

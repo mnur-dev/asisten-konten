@@ -1,5 +1,6 @@
 """FFmpeg helpers: probing and raw grayscale sampling."""
 import json
+import os
 import re
 import subprocess
 import sys
@@ -22,6 +23,21 @@ def _run_yt_dlp(command, on_progress):
             on_progress(float(match.group(1)), match.group(2))
     process.wait()
     return process.returncode, chr(10).join(tail)[-800:]
+
+
+def cookie_file() -> Path | None:
+    """A Netscape cookies.txt exported from a logged-in browser, if one is configured.
+
+    YT_COOKIES names it; a cookies.txt at the repo root is the fallback (gitignored --
+    it is a live login). This is what makes downloads work on the VPS: YouTube answers
+    a datacenter IP with "Sign in to confirm you're not a bot" before listing a single
+    format, and there is no browser profile there for --cookies-from-browser. yt-dlp
+    writes rotated cookies back into the file, so it has to stay writable; that keeps
+    the session alive longer than the exported copy would on its own.
+    """
+    configured = os.environ.get("YT_COOKIES", "").strip()
+    path = Path(configured) if configured else Path(__file__).resolve().parents[1] / "cookies.txt"
+    return path if path.is_file() else None
 
 
 def download(url, output, on_progress=None) -> Path:
@@ -47,15 +63,21 @@ def download(url, output, on_progress=None) -> Path:
         ["--cookies-from-browser", "firefox", "--remote-components", "ejs:github"],
         [],
     ]
-    returncode, detail = 1, "no attempt ran"
+    if cookies := cookie_file():
+        variants.insert(0, ["--cookies", str(cookies), "--remote-components", "ejs:github"])
+    returncode, detail, cookie_detail = 1, "no attempt ran", None
     for extra in variants:
         returncode, detail = _run_yt_dlp(
             [sys.executable, "-m", "yt_dlp", *extra, *common], on_progress)
         if not returncode and output.is_file():
             return output
+        if extra[:1] == ["--cookies"]:
+            cookie_detail = detail
         for leftover in output.parent.glob(output.stem + ".*"):
             leftover.unlink(missing_ok=True)
-    raise RuntimeError(f"Video download failed: {detail}")
+    # With a cookie file configured, its failure is the one worth reading: wherever it
+    # was needed, the attempts after it fail with the bot check and hide an expired login.
+    raise RuntimeError(f"Video download failed: {cookie_detail or detail}")
 
 
 def probe(path) -> dict:
