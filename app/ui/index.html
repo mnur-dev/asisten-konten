@@ -600,6 +600,65 @@ function zoomCrop(s) {
            x: Math.round(Math.min(Math.max(cx - w / 2, 0), s.width - w)),
            y: Math.round(Math.min(Math.max(cy - h / 2, 0), s.height - h)) };
 }
+// The stretch of broadcast the long video will actually contain: from `leadIn`
+// seconds before the first move to `outro` seconds after the last one -- the same
+// arithmetic start_render does. Uses the boxes' live values, so the layout preview
+// follows an edit before it is saved. null before detection (no timestamps yet).
+function outputWindow(s) {
+  const times = (s.waypoints || []).map((w) => w.timestamp).filter((t) => t !== null && t !== undefined);
+  if (!times.length) return null;
+  const first = times[0], last = times[times.length - 1];
+  const lo = Math.max(0, first - leadIn);
+  const hi = Math.min(s.duration || Infinity, Math.max(lo + 1, last + outro));
+  return { first, last, lo, hi };
+}
+
+// Under the layout preview: where this second lands in the finished video, and the
+// number to type into "mulai −" / "selesai +" to make the video start or stop here.
+let pickInfoHtml = "";
+function renderPickInfo(t) {
+  const host = $("pickInfo");
+  if (!host) return;
+  const w = outputWindow(state);
+  let html = "";
+  if (w) {
+    const pos = Math.max(0, t - w.lo), total = w.hi - w.lo;
+    const stop = Math.round(t - w.last), start = Math.round(w.first - t);
+    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}
+      <div class="row" style="margin-top:5px;gap:6px">
+      ${stop >= 0
+        ? `<span>Stop di sini → isi <b>selesai + ${stop}</b></span>
+           <button onclick="useWindowValue('outro', ${stop})" style="padding:3px 10px;font-size:12px">Pakai</button>`
+        : `<span>Belum bisa stop di sini: langkah terakhir di ${fmtTime(w.last)}</span>`}
+      ${start >= 0
+        ? `<span style="margin-left:8px">Mulai di sini → isi <b>mulai − ${start}</b></span>
+           <button onclick="useWindowValue('lead', ${start})" style="padding:3px 10px;font-size:12px">Pakai</button>`
+        : ""}
+      </div>`;
+  }
+  if (html !== pickInfoHtml) { host.innerHTML = html; pickInfoHtml = html; }
+}
+
+// Re-fit the preview's slider to the output window after mulai/selesai change.
+function refitPickWindow() {
+  const range = $("pickRange");
+  if (!range || !state) return;
+  const w = outputWindow(state);
+  const lo = w ? w.lo : 0, hi = w ? w.hi : (state.duration || 60);
+  range.min = lo; range.max = hi;
+  const total = $("pickTotal");
+  if (total) total.textContent = `/ ${fmtTime(hi)}`;
+  renderPickInfo(+range.value);
+}
+
+async function useWindowValue(kind, value) {
+  if (kind === "outro") { outro = value; if ($("outro")) $("outro").value = value; }
+  else { leadIn = value; if ($("leadIn")) $("leadIn").value = value; }
+  refitPickWindow();
+  try { await post(kind === "outro" ? "outro" : "lead-in", { seconds: value }); }
+  catch (e) { alert(e.message); }
+}
+
 function scrubVideo(id, at, crop) {
   const place = crop
     ? `left:${-crop.x / crop.w * 100}%;top:${-crop.y / crop.h * 100}%;
@@ -611,18 +670,19 @@ function scrubVideo(id, at, crop) {
            src="api/projects/${current}/video#t=${at}"
            style="position:absolute;${place};max-width:none"></video></div>`;
 }
-function scrubControls(id, at, duration, extra = "") {
+function scrubControls(id, at, duration, extra = "", min = 0) {
   return `<div class="row scrub-row" style="margin-top:8px">
     <button id="${id}Play" title="Putar / jeda" style="min-width:44px">▶</button>
-    <input id="${id}Range" type="range" min="0" max="${duration}" step="0.1" value="${at}"
+    <input id="${id}Range" type="range" min="${min}" max="${duration}" step="0.1" value="${at}"
            style="flex:1;min-width:140px;padding:0">
     <input id="${id}Time" type="text" value="${fmtTime(at)}" placeholder="mm:ss"
-           style="width:66px" title="Ketik detik atau mm:ss lalu Enter">
-    <span class="hint">/ ${fmtTime(duration)}</span>
+           style="width:66px" title="Ketik detik siaran atau mm:ss lalu Enter">
+    <span id="${id}Total" class="hint">/ ${fmtTime(duration)}</span>
     ${extra}
-  </div>`;
+  </div>
+  <div id="${id}Info" class="hint scrub-info" style="margin-top:6px"></div>`;
 }
-function wireScrubber(id, img, { frameSrc, onTime }) {
+function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
   const video = $(`${id}Video`), cover = $(`${id}Cover`), range = $(`${id}Range`),
         box = $(`${id}Time`), play = $(`${id}Play`);
   if (!video || !img) return;
@@ -630,6 +690,7 @@ function wireScrubber(id, img, { frameSrc, onTime }) {
   const label = (t) => {
     range.value = t;
     if (document.activeElement !== box) box.value = fmtTime(t);
+    if (onLabel) onLabel(t);
   };
   const seek = (t) => { active = true; video.currentTime = t; label(t); onTime(t); };
   const settle = (t) => {
@@ -660,7 +721,7 @@ function wireScrubber(id, img, { frameSrc, onTime }) {
   box.onchange = () => {
     const t = parseTime(box.value);
     if (t === null) return;
-    const clamped = Math.min(Math.max(t, 0), +range.max || t);
+    const clamped = Math.min(Math.max(t, +range.min || 0), +range.max || t);
     if (!video.paused) video.pause();
     video.currentTime = clamped;
     settle(clamped);
@@ -671,7 +732,9 @@ function pickerCard(s) {
   const isLayout = picking === "layout";
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
-  const at = pickAt ?? Math.round(duration * 0.55);
+  const win = outputWindow(s);
+  const lo = win ? win.lo : 0, hi = win ? win.hi : duration;
+  const at = Math.min(Math.max(pickAt ?? Math.round(lo + (hi - lo) * 0.55), lo), hi);
   const spec = LAYERS[layer];
   const count = isLayout && !spec.special ? spec.get(s).length : 0;
   const fixedSize = spec.pairSize && !count ? spec.pairSize(s) : null;
@@ -719,7 +782,7 @@ function pickerCard(s) {
       </svg>
       <div id="pickhandles"></div>` : ""}
     </div>
-    ${scrubControls("pick", at, Math.round(duration))}
+    ${scrubControls("pick", at, hi, "", lo)}
     <div class="row" style="margin-top:10px">
       ${isZoom
         ? `${s.source_zoom ? `<button onclick="resetZoom()">Hapus zoom</button>` : ""}`
@@ -920,11 +983,13 @@ function shortParams() { return { ...shortOpts }; }
 function setLeadIn(value) {
   const number = parseFloat(value);
   leadIn = Math.max(0, isFinite(number) ? number : 0);
+  refitPickWindow();
 }
 
 function setOutro(value) {
   const number = parseFloat(value);
   outro = Math.max(0, isFinite(number) ? number : 0);
+  refitPickWindow();
 }
 
 function shortOptsDirty(s) {
@@ -1564,7 +1629,10 @@ function pickFrameSrc(t) {
 }
 
 function wirePicker() {
-  wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; } });
+  pickInfoHtml = "";
+  wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; },
+                                       onLabel: renderPickInfo });
+  renderPickInfo(+$("pickRange").value);
   if (picking !== "layout") wireQuadPicker();
   else if (layer === "zoom") wireZoomPicker();
   else wireRectPicker();

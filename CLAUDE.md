@@ -48,6 +48,12 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    `wireBoxDrag()` — tata letak, kotak judul thumbnail; short punya
    `wireShortBoxDrag()` sendiri. Kotak tersimpan langsung disimpan saat dilepas.
    Akibatnya kotak baru harus mulai digambar di luar kotak yang sudah ada.
+   Rentang slider preview tata letak = jendela video jadi (`outputWindow()`: langkah 1
+   − mulai → langkah terakhir + selesai, dari nilai kotak yang sedang terisi, belum
+   perlu disimpan). Di bawahnya `renderPickInfo()` menampilkan posisi di video jadi,
+   sisa durasi, dan angka "selesai +" / "mulai −" supaya video berhenti/mulai di detik
+   yang sedang tampil; tombol "Pakai" langsung menyimpannya. Sebelum deteksi (belum ada
+   timestamp) slider tetap sepanjang siaran.
 7. **Render video panjang** — `board.mp4` + `full-video.mp4` (video asli, papan
    overlay-nya ditimpa video board kita; audio asli dibisukan, yang terdengar cuma
    klik langkah kalau suara langkah aktif). Dimulai di langkah pertama, bukan di
