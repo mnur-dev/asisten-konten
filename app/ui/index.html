@@ -73,6 +73,25 @@
   .scroll { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; }
   .err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
+  /* Phones: the two fixed-height scroll panes become one normal page, the
+     project list sits on top (capped so it doesn't push the panel off-screen),
+     and every side-by-side .split stacks. */
+  @media (max-width: 760px) {
+    body { font-size: 15px; }
+    header { padding: 10px 14px; flex-wrap: wrap; gap: 4px 10px; }
+    main { display: block; height: auto; }
+    aside { border-right: 0; border-bottom: 1px solid var(--line); max-height: 34vh;
+            padding: 10px 14px; }
+    section { overflow: visible; padding: 12px 14px; }
+    .card { padding: 12px; }
+    .split { grid-template-columns: 1fr; }
+    .scroll { max-height: 300px; overflow-x: auto; }
+    button { min-height: 36px; }
+    input, textarea { font-size: 16px; }  /* < 16px makes iOS zoom in on focus */
+    input[type=number] { width: 64px !important; }
+    .look-img { width: 100% !important; max-width: 280px; }
+    .look-opts { flex-basis: 100% !important; }
+  }
 </style>
 </head>
 <body>
@@ -374,8 +393,8 @@ function lookCard(s) {
   return `<div class="card">
     <div class="row" style="align-items:flex-start;gap:18px">
       <img src="api/projects/${current}/board?ply=${ply}&width=210&_=${lookStamp}"
-           style="width:210px;border-radius:8px;flex:none">
-      <div style="flex:1">
+           class="look-img" style="width:210px;border-radius:8px;flex:none">
+      <div class="look-opts" style="flex:1">
         <div class="hint" style="margin-bottom:6px">Warna papan</div>
         <div class="row" style="margin-bottom:12px">${s.themes.map(swatch).join("")}</div>
         <div class="hint" style="margin-bottom:6px">Set bidak</div>
