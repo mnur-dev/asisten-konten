@@ -92,6 +92,11 @@ def find_api_key() -> str | None:
     """
     if key := os.environ.get("OPENROUTER_API_KEY", "").strip():
         return key
+    # On the VPS the key lives next to cookies.txt, outside public_html. It may be
+    # saved from Windows Notepad, hence utf-8-sig (BOM) and strip() (CRLF).
+    if (key_file := os.environ.get("OPENROUTER_KEY_FILE")) and Path(key_file).is_file():
+        if key := Path(key_file).read_text(encoding="utf-8-sig", errors="replace").strip():
+            return key
     env = env_path()
     if not env.is_file():
         return None

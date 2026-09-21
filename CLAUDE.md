@@ -255,6 +255,11 @@ dari mesin pencari.
 - UI memakai URL relatif (`api/...`, bukan `/api/...`) — itu satu-satunya hal yang
   membuatnya jalan di bawah subpath. Jangan kembalikan ke absolut.
 - Update: `git pull` di server lalu `sudo systemctl restart asisten-konten`.
+- Key OpenRouter di VPS: `/home/admin/web/yt.sukaweb.my.id/private/opr.txt` (mode 640,
+  di luar `public_html`), ditunjuk env `OPENROUTER_KEY_FILE` di unit systemd. Dibaca
+  tiap panggilan, jadi ganti key cukup timpa file itu tanpa restart. File boleh disimpan
+  dari Notepad Windows — BOM dan CRLF dibuang. Urutan: env `OPENROUTER_API_KEY` →
+  file ini → `.env`.
 
 Server 2 vCPU tanpa GPU (`pick_encoder()` jatuh ke libx264 — `libcuda.so.1` tidak ada),
 dibagi dengan website produksi. Terukur dengan benchmark ffmpeg identik: decode 3,0×,
