@@ -5,7 +5,8 @@ siaran**, bukan jam di PGN. Tujuan akhirnya menggantikan pekerjaan manual:
 menonton pertandingan penuh (10–30 menit) sambil menekan tombol "next" di papan
 analisis lalu merekam layar.
 
-Semua berjalan lokal di Windows. Tidak ada VPS.
+Dikembangkan dan dipakai lokal di Windows; salinannya juga di-deploy ke VPS
+(`https://yt.sukaweb.my.id/chess-vids/`) — lihat **Deploy** di bawah.
 
 ```bash
 python -m app          # buka http://127.0.0.1:8420
@@ -229,6 +230,37 @@ sebagai input ffmpeg terakhir. Alasannya: `drawtext` butuh path font di dalam st
 filter, dan di Windows path itu mengandung titik dua drive plus backslash yang harus
 lolos dua lapis escaping — rapuh dan sulit dilacak kalau salah. PIL juga menyamakan
 kendali tipografinya dengan papan yang sudah digambar PIL.
+
+## Deploy
+
+`https://yt.sukaweb.my.id/chess-vids/` — **tanpa login**, pilihan pengguna, walau
+siapa pun yang tahu URL-nya bisa memicu render dan memakai saldo OpenRouter. Header
+`X-Robots-Tag: noindex` (include `nginx.conf_noindex` milik domain) menjaganya keluar
+dari mesin pencari.
+
+- Kode: `/home/ubuntu/asisten-konten` (clone repo ini), venv sendiri, Stockfish 18 build
+  `ubuntu-x86-64-avx2` di `engines/stockfish/` — bukan avx512, sebab VM cloud bisa
+  dipindah ke host yang tidak mendukungnya.
+- Servis: systemd `asisten-konten`, user `ubuntu`, `Nice=10` supaya website lain di
+  server yang sama tetap didahulukan. Masih `127.0.0.1:8420`, tidak pernah terbuka ke luar.
+- nginx: include Hestia `nginx.conf_chessvids` + `nginx.ssl.conf_chessvids` di
+  `/home/admin/conf/web/yt.sukaweb.my.id/`, jadi template domain (dan dashboard YouTube
+  Analytics di `/`) tidak disentuh. `location ^~ /chess-vids/` **wajib** `^~`: tanpa itu
+  regex ekstensi statis milik domain menang untuk `.mp4`/`.png`/`.mp3` dan nginx
+  mencarinya di `public_html`.
+- UI memakai URL relatif (`api/...`, bukan `/api/...`) — itu satu-satunya hal yang
+  membuatnya jalan di bawah subpath. Jangan kembalikan ke absolut.
+- Update: `git pull` di server lalu `sudo systemctl restart asisten-konten`.
+
+Server 2 vCPU tanpa GPU (`pick_encoder()` jatuh ke libx264 — `libcuda.so.1` tidak ada),
+dibagi dengan website produksi. Terukur dengan benchmark ffmpeg identik: decode 3,0×,
+encode x264 2,4–2,6× lebih lambat dari laptop, dan 7,5× dibanding NVENC yang dipakai
+laptop. Proyeksinya ~18–22 menit mesin per video vs ~5 menit lokal.
+
+**YouTube memblokir IP server ini.** yt-dlp gagal di tahap metadata dengan "Sign in to
+confirm you're not a bot" (diuji 2026-09-21), jadi di server langkah **Buat proyek**
+belum bisa mengunduh apa pun. Varian `--cookies-from-browser firefox` di
+`video.download()` tidak berlaku di sana — tidak ada profil Firefox.
 
 ## Struktur
 
