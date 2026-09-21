@@ -73,6 +73,7 @@
   .scroll { max-height: 340px; overflow-y: auto; border: 1px solid var(--line); border-radius: 7px; }
   .err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
+  .scrub-row { max-width: 880px; }
   /* Phones: the two fixed-height scroll panes become one normal page, the
      project list sits on top (capped so it doesn't push the panel off-screen),
      and every side-by-side .split stacks. */
@@ -85,6 +86,8 @@
     section { overflow: visible; padding: 12px 14px; }
     .card { padding: 12px; }
     .split { grid-template-columns: 1fr; }
+    .split > * { min-width: 0; }  /* grid items default to min-content width */
+    select { max-width: 100%; min-width: 0 !important; }
     .scroll { max-height: 300px; overflow-x: auto; }
     button { min-height: 36px; }
     input, textarea { font-size: 16px; }  /* < 16px makes iOS zoom in on focus */
@@ -331,7 +334,10 @@ function draw() {
     ${s.waypoints ? waypointsCard(s) : ""}`;
   if (s.waypoints) updateShortEstimate();
   if (picking === "short") { wireShortPicker(); wireShortPreview(); }
-  else if (picking === "thumb") { wireThumbPicker(); refreshThumbPromptButton(); }
+  else if (picking === "thumb") {
+    wireScrubber("thumb", $("thumbFrame"), { frameSrc: thumbFrameSrc, onTime: (t) => { thumbAt = t; } });
+    wireThumbPicker(); refreshThumbPromptButton();
+  }
   else if (picking) wirePicker();
   const log = $("log"); if (log) log.scrollTop = log.scrollHeight;
   if (segStart !== null && s.waypoints) showSegment(segStart);
@@ -561,13 +567,96 @@ function fmtTime(t) {
   return `${Math.floor(total / 60)}:${String(total % 60).padStart(2, "0")}`;
 }
 
-function setPickAt(t) { pickAt = Math.round(Math.min(Math.max(t, 0), state.duration || t)); draw(); }
-function setPickAtInput() {
-  const raw = $("pickattime").value.trim();
-  const parts = raw.split(":").map(Number);
-  if (parts.some(Number.isNaN) || !parts.length) return;
-  const secs = parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
-  setPickAt(secs);
+function parseTime(raw) {
+  const parts = String(raw).trim().split(":").map(Number);
+  if (!parts.length || parts.some(Number.isNaN)) return null;
+  return parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0];
+}
+
+// Frame scrubber shared by the layout picker and the thumbnail frame picker. The
+// still JPEG from /frame stays the thing boxes are drawn against (it is what the
+// backend crops from); the source <video> is laid over it only while playing or
+// dragging the slider, so the whole broadcast can be skimmed without one ffmpeg
+// call per step. When playback stops the exact still for that second is fetched and
+// the video steps aside once it has loaded.
+//
+// `crop` mirrors core/render.zoom_crop_rect so the video shows the same zoomed
+// window as a `zoomed=1` frame.
+function zoomCrop(s) {
+  const zoom = s.source_zoom;
+  if (!zoom || (zoom.percent || 100) <= 100 || !s.width || !s.height) return null;
+  const factor = zoom.percent / 100;
+  const w = Math.round(s.width / factor), h = Math.round(s.height / factor);
+  const cx = (zoom.x ?? 0.5) * s.width, cy = (zoom.y ?? 0.5) * s.height;
+  return { w, h, W: s.width, H: s.height,
+           x: Math.round(Math.min(Math.max(cx - w / 2, 0), s.width - w)),
+           y: Math.round(Math.min(Math.max(cy - h / 2, 0), s.height - h)) };
+}
+function scrubVideo(id, at, crop) {
+  const place = crop
+    ? `left:${-crop.x / crop.w * 100}%;top:${-crop.y / crop.h * 100}%;
+       width:${crop.W / crop.w * 100}%;height:${crop.H / crop.h * 100}%`
+    : "left:0;top:0;width:100%;height:100%";
+  return `<div id="${id}Cover" style="position:absolute;inset:0;overflow:hidden;display:none;
+       pointer-events:none;border-radius:7px;background:#000">
+    <video id="${id}Video" muted playsinline preload="metadata"
+           src="api/projects/${current}/video#t=${at}"
+           style="position:absolute;${place};max-width:none"></video></div>`;
+}
+function scrubControls(id, at, duration, extra = "") {
+  return `<div class="row scrub-row" style="margin-top:8px">
+    <button id="${id}Play" title="Putar / jeda" style="min-width:44px">▶</button>
+    <input id="${id}Range" type="range" min="0" max="${duration}" step="0.1" value="${at}"
+           style="flex:1;min-width:140px;padding:0">
+    <input id="${id}Time" type="text" value="${fmtTime(at)}" placeholder="mm:ss"
+           style="width:66px" title="Ketik detik atau mm:ss lalu Enter">
+    <span class="hint">/ ${fmtTime(duration)}</span>
+    ${extra}
+  </div>`;
+}
+function wireScrubber(id, img, { frameSrc, onTime }) {
+  const video = $(`${id}Video`), cover = $(`${id}Cover`), range = $(`${id}Range`),
+        box = $(`${id}Time`), play = $(`${id}Play`);
+  if (!video || !img) return;
+  let active = false;            // true while playing or dragging: the video is on top
+  const label = (t) => {
+    range.value = t;
+    if (document.activeElement !== box) box.value = fmtTime(t);
+  };
+  const seek = (t) => { active = true; video.currentTime = t; label(t); onTime(t); };
+  const settle = (t) => {
+    t = Math.round(t * 10) / 10;
+    active = false;
+    label(t); onTime(t);
+    const src = frameSrc(t);
+    if (img.getAttribute("src") === src) { cover.style.display = "none"; return; }
+    img.setAttribute("src", src);
+  };
+  img.addEventListener("load", () => { if (!active) cover.style.display = "none"; });
+  video.addEventListener("seeked", () => { if (active) cover.style.display = "block"; });
+  video.addEventListener("playing", () => { cover.style.display = "block"; });
+  video.addEventListener("timeupdate", () => {
+    if (!video.paused) { label(video.currentTime); onTime(Math.round(video.currentTime * 10) / 10); }
+  });
+  video.addEventListener("pause", () => { play.textContent = "▶"; settle(video.currentTime); });
+  play.onclick = () => {
+    if (!video.paused) { video.pause(); return; }
+    active = true;
+    const t = +range.value;
+    if (Math.abs(video.currentTime - t) > 0.3) video.currentTime = t;
+    play.textContent = "❚❚";
+    video.play().catch((e) => { play.textContent = "▶"; active = false; alert(e.message); });
+  };
+  range.oninput = () => seek(+range.value);
+  range.onchange = () => { if (video.paused) settle(+range.value); };
+  box.onchange = () => {
+    const t = parseTime(box.value);
+    if (t === null) return;
+    const clamped = Math.min(Math.max(t, 0), +range.max || t);
+    if (!video.paused) video.pause();
+    video.currentTime = clamped;
+    settle(clamped);
+  };
 }
 
 function pickerCard(s) {
@@ -575,7 +664,6 @@ function pickerCard(s) {
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
   const at = pickAt ?? Math.round(duration * 0.55);
-  const presets = [0.1, 0.25, 0.4, 0.55, 0.7, 0.85].map((p) => Math.round(duration * p));
   const spec = LAYERS[layer];
   const count = isLayout && !spec.special ? spec.get(s).length : 0;
   const fixedSize = spec.pairSize && !count ? spec.pairSize(s) : null;
@@ -606,20 +694,11 @@ function pickerCard(s) {
              style="width:70px;font-size:12px;padding:3px 6px">%
       <span class="hint">(100% = tanpa zoom)</span>
     </div>` : ""}
-    <div class="row" style="margin-bottom:9px;align-items:center;flex-wrap:wrap">
-      <span class="hint">Ambil gambar dari:</span>
-      ${presets.map((t) => `<button onclick="setPickAt(${t})"
-          style="padding:3px 9px;font-size:11px;${t === at ? "border-color:var(--accent);color:var(--accent)" : ""}">
-          ${fmt(t)}</button>`).join("")}
-      <input id="pickattime" type="text" placeholder="detik atau mm:ss" value="${at}"
-             style="width:90px;font-size:11px;padding:3px 6px"
-             onkeydown="if(event.key==='Enter') setPickAtInput()">
-      <button onclick="setPickAtInput()" style="padding:3px 9px;font-size:11px">Pakai waktu ini</button>
-    </div>
     <div id="pickwrap" style="position:relative;display:inline-block;cursor:${isZoom ? "move" : "crosshair"};
          user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
-           src="api/projects/${current}/frame?t=${at}&width=880${isLayout && !isZoom ? "&zoomed=1" : ""}">
+           src="${pickFrameSrc(at)}">
+      ${scrubVideo("pick", at, isLayout && !isZoom ? zoomCrop(s) : null)}
       <div id="pickexisting"></div>
       ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
            background:${spec.colour}26;pointer-events:none;cursor:move"></div>` : ""}
@@ -631,6 +710,7 @@ function pickerCard(s) {
       </svg>
       <div id="pickhandles"></div>` : ""}
     </div>
+    ${scrubControls("pick", at, Math.round(duration))}
     <div class="row" style="margin-top:10px">
       ${isZoom
         ? `${s.source_zoom ? `<button onclick="resetZoom()">Hapus zoom</button>` : ""}`
@@ -1463,7 +1543,13 @@ async function clearShortLayer() {
   refresh();
 }
 
+function pickFrameSrc(t) {
+  const zoomed = picking === "layout" && layer !== "zoom";
+  return `api/projects/${current}/frame?t=${t}&width=880${zoomed ? "&zoomed=1" : ""}`;
+}
+
 function wirePicker() {
+  wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; } });
   if (picking !== "layout") wireQuadPicker();
   else if (layer === "zoom") wireZoomPicker();
   else wireRectPicker();
@@ -1997,18 +2083,7 @@ async function toggleThumb() {
 
 function setThumbQuality(value) { thumbQuality = value; draw(); }
 
-function setThumbAt(t) {
-  thumbAt = Math.round(Math.min(Math.max(t, 0), state.duration || t));
-  const img = $("thumbFrame"), box = $("thumbAtInput");
-  if (img) img.src = `api/projects/${current}/frame?t=${thumbAt}&width=460`;
-  if (box && document.activeElement !== box) box.value = fmtTime(thumbAt);
-}
-
-function setThumbAtInput() {
-  const parts = ($("thumbAtInput").value.trim().split(":") || []).map(Number);
-  if (!parts.length || parts.some(Number.isNaN)) return;
-  setThumbAt(parts.length === 2 ? parts[0] * 60 + parts[1] : parts[0]);
-}
+function thumbFrameSrc(t) { return `api/projects/${current}/frame?t=${t}&width=460`; }
 
 // Freeze the chosen second as the file that actually gets uploaded, so a later
 // retry sends the frame the user approved rather than re-reading the video.
@@ -2150,15 +2225,13 @@ function thumbEditorCard(s) {
       <div>
         <p class="hint" style="margin:0 0 9px"><b>1. Pilih frame.</b> Geser ke momen yang
           ekspresinya paling kuat — itu yang dikirim ke AI.</p>
-        <img id="thumbFrame" style="display:block;width:460px;max-width:100%;border-radius:7px"
-             src="api/projects/${current}/frame?t=${thumbAt}&width=460">
-        <div class="row" style="margin-top:8px">
-          <input type="range" min="0" max="${Math.round(s.duration || 0)}" value="${thumbAt}"
-                 style="flex:1;min-width:150px" oninput="setThumbAt(+this.value)">
-          <input id="thumbAtInput" type="text" value="${fmtTime(thumbAt)}" style="width:66px"
-                 placeholder="mm:ss" onchange="setThumbAtInput()">
-          <button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>
+        <div style="position:relative;width:460px;max-width:100%">
+          <img id="thumbFrame" style="display:block;width:100%;border-radius:7px"
+               src="${thumbFrameSrc(thumbAt)}">
+          ${scrubVideo("thumb", thumbAt, null)}
         </div>
+        ${scrubControls("thumb", thumbAt, Math.round(s.duration || 0),
+          `<button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>`)}
         <p class="hint" style="margin:7px 0 0">${s.has_thumb_source
           ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.`
           : "Belum ada frame tersimpan."}</p>

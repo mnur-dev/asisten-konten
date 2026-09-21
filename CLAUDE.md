@@ -37,6 +37,10 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    - `blur_rects` — disamarkan dengan `boxblur`
    - `brand_file` + `brand_rect` — logo milik pengguna yang diunggah, ditempel
    - `name_rects` — papan nama pemain putih/hitam, teks dari PGN
+   Frame contohnya dipilih lewat scrubber yang sama dengan picker frame thumbnail
+   (`wireScrubber()`): slider sepanjang video + tombol putar. Selama diputar/digeser
+   yang tampil `<video>` sumber (di-crop CSS mengikuti `source_zoom`), begitu berhenti
+   diganti JPEG `/frame` detik itu — kotak selalu digambar di atas still dari backend.
 7. **Render video panjang** — `board.mp4` + `full-video.mp4` (video asli, papan
    overlay-nya ditimpa video board kita; audio asli dibisukan, yang terdengar cuma
    klik langkah kalau suara langkah aktif). Dimulai di langkah pertama, bukan di
