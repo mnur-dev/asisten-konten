@@ -29,3 +29,12 @@ cookies.txt
 
 # per-channel upload description/tags (contact email, donation links)
 upload-templates.json
+
+# runtime log (shell redirect target; regenerated on every run)
+server.log
+
+# background music for manual editing -- not a move sound clip
+assets/sounds/Tame Impala.MP3
+
+# yt-dlp leftover download fragments
+tmp*.tmp-Frag*
