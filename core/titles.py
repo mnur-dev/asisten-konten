@@ -154,3 +154,45 @@ that performs on this channel. Make the {COUNT} titles use different patterns fr
         raise RuntimeError(f"Claude Code gagal: {str(reply.get('result'))[-300:]}")
     titles = (reply.get("structured_output") or json.loads(reply["result"]))["titles"]
     return [{"title": t["title"].strip(), "angle": t.get("angle", "").strip()} for t in titles][:COUNT]
+
+
+TEXT_SCHEMA = {
+    "type": "object",
+    "properties": {"texts": {"type": "array", "minItems": 3, "maxItems": 3, "items": {
+        "type": "object",
+        "properties": {"text": {"type": "string"}, "angle": {"type": "string"}},
+        "required": ["text", "angle"]}}},
+    "required": ["texts"],
+}
+
+
+def thumb_text_options(folder: Path, meta: dict, title: str) -> list[dict]:
+    """Three short thumbnail texts that COMPLEMENT the chosen video title -- the
+    thumbnail adds the emotion or the punchline the title leaves out, instead of
+    repeating it (e.g. title "Javokhir Sindarov Defeats Kramnik, Who Walks Off
+    Immediately" + text "Kramnik Rage Quit!!")."""
+    prompt = f"""The YouTube video title is: "{title}"
+
+Facts from the PGN (the only claims allowed):
+{pgn_facts(folder, meta)}
+
+Write 3 thumbnail texts to be painted big on the thumbnail next to the players' faces.
+- 2 to 4 words, at most 24 characters, English, may end with "!!" or "?"
+- Complement the title: add the emotion, reaction or punchline; never repeat the title's words
+- Must be true to the facts; a player named in it is referred to by surname
+- The three should differ in angle (reaction, stakes, twist)"""
+    system = ("You write YouTube thumbnail text for a chess channel. Answer only with the "
+              "structured output: three texts, each with a one-line angle in Bahasa Indonesia.")
+    with tempfile.TemporaryDirectory() as scratch:
+        out = subprocess.run(
+            [claude_bin(), "-p", "--output-format", "json", "--tools", "", "--model", MODEL,
+             "--no-session-persistence", "--system-prompt", system,
+             "--json-schema", json.dumps(TEXT_SCHEMA)],
+            input=prompt, capture_output=True, text=True, timeout=300, cwd=scratch)
+    if out.returncode != 0:
+        raise RuntimeError(f"Claude Code gagal: {(out.stderr or out.stdout).strip()[-300:]}")
+    reply = json.loads(out.stdout)
+    if reply.get("is_error"):
+        raise RuntimeError(f"Claude Code gagal: {str(reply.get('result'))[-300:]}")
+    texts = (reply.get("structured_output") or json.loads(reply["result"]))["texts"]
+    return [{"text": t["text"].strip().strip('"'), "angle": t.get("angle", "").strip()} for t in texts][:3]

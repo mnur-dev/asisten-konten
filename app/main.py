@@ -4,6 +4,7 @@ import logging
 import shutil
 import subprocess
 import threading
+import re
 import time
 import uuid
 from pathlib import Path
@@ -1382,7 +1383,8 @@ def thumb_prompt_of(meta: dict) -> str:
         return stored
     return thumbnail.DEFAULT_PROMPT.format(
         white=meta.get("white") or "the player on the left",
-        black=meta.get("black") or "the player on the right")
+        black=meta.get("black") or "the player on the right",
+        teks=(meta.get("thumb_text") or "").strip() or thumbnail.TEXT_PLACEHOLDER)
 
 
 def thumb_attempts(path: Path) -> list[str]:
@@ -1464,6 +1466,38 @@ def set_thumb_prompt(project_id: str, prompt: str = Body("", embed=True)):
     path = folder(project_id)
     update(path, thumb_prompt=(prompt or "").strip() or None)
     return {"thumb_prompt": thumb_prompt_of(read_meta(path))}
+
+
+@app.post("/api/projects/{project_id}/thumb-text")
+def set_thumb_text(project_id: str, text: str = Body("", embed=True)):
+    """The text the AI paints on the thumbnail. Filled into the default prompt; in a
+    hand-edited prompt the quoted text after 'tambahkan text' is swapped in place, so
+    picking a new text never throws away the user's other edits."""
+    path = folder(project_id)
+    meta = read_meta(path)
+    text = text.strip().strip('"')
+    fields = {"thumb_text": text or None}
+    if stored := (meta.get("thumb_prompt") or "").strip():
+        fields["thumb_prompt"] = re.sub(r'(tambahkan text\s*")[^"]*(")',
+                                        lambda m: m.group(1) + (text or thumbnail.TEXT_PLACEHOLDER) + m.group(2),
+                                        stored, count=1)
+    meta = update(path, **fields)
+    return {"thumb_text": text, "thumb_prompt": thumb_prompt_of(meta)}
+
+
+@app.post("/api/projects/{project_id}/thumb-text-suggestions")
+def thumb_text_suggestions(project_id: str, title: str = Body(..., embed=True)):
+    """Three thumbnail texts from Claude Code that complement the chosen title."""
+    if not title.strip():
+        raise HTTPException(400, "Pilih judul video dulu")
+    path = folder(project_id)
+    try:
+        texts = titles.thumb_text_options(path, read_meta(path), title.strip())
+    except Exception as error:
+        raise HTTPException(502, str(error) or type(error).__name__)
+    update(path, thumb_text_suggestions={"title": title.strip(), "texts": texts,
+                                          "created": time.strftime("%Y-%m-%d %H:%M")})
+    return {"texts": texts}
 
 
 @app.post("/api/projects/{project_id}/thumb-texts")

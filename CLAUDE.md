@@ -204,6 +204,18 @@ PGN) → **Buat dengan AI** → tarik kotak judul di hasilnya. Frame dibekukan k
 lebih dulu, bukan diambil ulang saat generate, supaya percobaan kedua mengirim frame
 yang sama persis dengan yang sudah disetujui.
 
+**Prompt default diganti pengguna (2026-09-22): AI kini menulis teks + panah.** Prompt baru
+(`thumbnail.DEFAULT_PROMPT`) meminta model menambahkan teks bertanda petik dan panah ke pemain
+kanan, merah outline putih — kebalikan dari pembagian "gambar ke AI, teks ke PIL" di atas,
+atas pilihan pengguna (konsekuensinya: ganti teks = generate ulang berbayar). Isiannya:
+`{white}`/`{black}` dari PGN, `{teks}` dari `meta["thumb_text"]` (placeholder `TEXT_PLACEHOLDER`
+sampai diisi). Teks diketik atau dipilih dari 3 saran Claude Code
+(`titles.thumb_text_options()`, `POST /thumb-text-suggestions`) yang **melengkapi** judul
+terpilih di paket upload — bukan mengulanginya; judul "terpilih" = draf/ketikan yang bukan
+sekadar nama proyek (`chosenTitle()`). `POST /thumb-text` juga mengganti teks bertanda petik
+setelah "tambahkan text" di prompt yang sudah diedit tangan, jadi editan lain tidak hilang.
+Headline PIL (`text_layer`, langkah "4. Judul") tetap ada.
+
 **Tiap percobaan disimpan, tidak ditimpa** (`thumb-ai-1.png`, `-2.png`, …). Percobaan
 yang lebih baru sering lebih jelek daripada yang lama, dan tiap gambar itu sudah dibayar
 — kembali ke yang lama tidak boleh berarti membayar lagi. Menghapusnya selalu lewat

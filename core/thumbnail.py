@@ -59,19 +59,23 @@ CACHE_DAYS = 7
 # dropdown; the real number always comes back in usage.cost afterwards.
 TOKENS_1K = 1117
 
-# The user's own prompt, in their own words. Indonesian on purpose: it is data sent
-# to the model, not code, and it is the wording they had already tuned by hand
-# against this exact kind of frame. {white}/{black} come from the PGN headers. The
-# text instruction is deliberately inverted from their original -- the headline is
-# drawn locally by text_layer(), so the model is told to add none.
+# The user's own prompt, in their own words (replaced 2026-09-22). Indonesian on
+# purpose: it is data sent to the model, not code. {white}/{black} come from the PGN
+# headers; {teks} is the thumbnail text -- typed, or picked from Claude's suggestions
+# that complement the chosen video title. By the user's choice the model now paints
+# the text and an arrow itself; the local PIL headline (text_layer) is still there
+# for anyone who prefers free, re-editable text over a paid regenerate per word.
 DEFAULT_PROMPT = (
-    "edit gambar ini untuk thumbnail video youtube. hilangkan logo2 dan hilangkan juga "
-    "board digital di tengah layar, fokus pada 2 orang paling depan di layar "
-    "({white} di sebelah kiri, {black} di sebelah kanan), sedikit blur latarnya untuk "
-    "menambah fokus ke karakter utama, perbesar muka kedua pemain, beri fokus lebih ke "
-    "ekspresinya. papan catur kayu dan bidak di atasnya biarkan persis seperti aslinya. "
-    "jangan tambahkan teks apa pun."
+    "edit gambar ini untuk thumbnail video youtube. hilangkan logo2, fokus pada 2 orang "
+    "paling depan di layar ({white} di sebelah kiri, {black} di sebelah kanan), sedikit "
+    "blur latarnya untuk menambah fokus ke karakter utama, perbesar muka kedua pemain, beri "
+    "fokus lebih ke ekspresi pemain kanan. papan catur kayu dan bidak di atasnya biarkan "
+    "persis seperti aslinya. tambahkan text \"{teks}\" tetap tulis tanda petiknya. arrow "
+    "mengarah ke pemain kanan. text dan arrow warna merah outline warna putih"
 )
+# Until a thumbnail text is chosen (typed, or picked from Claude's suggestions based on
+# the video title), the prompt carries this so it is obvious what still needs filling.
+TEXT_PLACEHOLDER = "TULIS TEKS THUMBNAIL"
 
 # The headline look from the user's own thumbnails: bright red, heavy white outline.
 TEXT_FILL = "#ff1417"
