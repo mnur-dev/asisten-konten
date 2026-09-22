@@ -273,15 +273,6 @@ function draw() {
           <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runRender()"
                   title="Render video panjang saja (board.mp4 + full-video.mp4). Short punya tombol sendiri.">
             Render video panjang</button>
-          <span class="hint">mulai −</span>
-          <input id="leadIn" type="number" min="0" step="5" value="${leadIn}"
-                 title="Detik siaran yang disisakan sebelum langkah pertama. 0 = video langsung mulai di langkah 1; 60 = mulai satu menit sebelumnya."
-                 style="width:56px;padding:7px 6px" oninput="setLeadIn(this.value)">
-          <span class="hint">dtk · selesai +</span>
-          <input id="outro" type="number" min="0" step="5" value="${outro}"
-                 title="Detik siaran yang disisakan setelah langkah terakhir. 0 = video berhenti tepat di langkah terakhir; 60 = satu menit sesudahnya (papan terakhir tetap tampil)."
-                 style="width:56px;padding:7px 6px" oninput="setOutro(this.value)">
-          <span class="hint" style="margin-right:6px">dtk</span>
           <span class="hint">ply</span>
           <input id="shortPlies" type="number" min="1" value="${shortOpts.plies}"
                  title="Jumlah ply terakhir yang dipakai"
@@ -681,6 +672,7 @@ function scrubControls(id, at, duration, extra = "", min = 0) {
     <span id="${id}Total" class="hint">/ ${fmtTime(duration)}</span>
     ${extra}
   </div>
+  ${id === "pick" && picking !== "thumb" ? windowInputs() : ""}
   <div id="${id}Info" class="hint scrub-info" style="margin-top:6px"></div>`;
 }
 function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
@@ -1065,6 +1057,29 @@ function setLeadIn(value) {
   const number = parseFloat(value);
   leadIn = Math.max(0, isFinite(number) ? number : 0);
   refitPickWindow();
+}
+
+// "mulai −" / "selesai +" for the long video, under the preview whose slider they
+// bound. Saved on change (and again just before a render), so a reload keeps them.
+function windowInputs() {
+  const group = "display:inline-flex;align-items:center;gap:6px;white-space:nowrap";
+  return `<div class="row" style="margin-top:8px;gap:8px 16px">
+    <span style="${group}"><span class="hint">Mulai −</span>
+      <input id="leadIn" type="number" min="0" step="5" value="${leadIn}"
+             title="Detik siaran sebelum langkah pertama. 0 = video langsung mulai di langkah 1; 60 = mulai satu menit sebelumnya."
+             style="width:64px;padding:5px 6px" oninput="setLeadIn(this.value)" onchange="saveWindow('lead-in')">
+      <span class="hint">dtk sebelum langkah 1</span></span>
+    <span style="${group}"><span class="hint">Selesai +</span>
+      <input id="outro" type="number" min="0" step="5" value="${outro}"
+             title="Detik siaran setelah langkah terakhir. 0 = video berhenti tepat di langkah terakhir; 60 = satu menit sesudahnya (papan terakhir tetap tampil)."
+             style="width:64px;padding:5px 6px" oninput="setOutro(this.value)" onchange="saveWindow('outro')">
+      <span class="hint">dtk setelah langkah terakhir</span></span>
+  </div>`;
+}
+
+async function saveWindow(kind) {
+  try { await post(kind, { seconds: kind === "outro" ? outro : leadIn }); }
+  catch (e) { alert(e.message); }
 }
 
 function setOutro(value) {

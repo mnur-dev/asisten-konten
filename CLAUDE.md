@@ -98,7 +98,7 @@ situ hitam; ini sudah pernah salah sekali. Karena mengubah piksel `board.mp4`,
 **Video panjang mulai di langkah pertama (`lead_in`).** Siaran punya menit-menit
 pembuka yang tidak ada isinya — pemain duduk, wasit bicara, papan belum jalan; di 13
 proyek yang ada jarak langkah pertamanya 3–182 detik. `full-video.mp4` sekarang mulai
-di langkah 1, dan kotak "mulai −" di sebelah tombolnya menyisakan sekian detik siaran
+di langkah 1, dan kotak "Mulai −" (di bawah preview, sebelahan dengan "Selesai +"; tersimpan saat diubah) menyisakan sekian detik siaran
 sebelum itu (0 = langsung di langkah 1, 60 = satu menit sebelumnya). Nilainya disimpan
 di `meta.json` sebagai `lead_in` dan di-post ulang tepat sebelum render, seperti
 short-cut, supaya angka yang dirender selalu angka yang terlihat di kotaknya.
@@ -112,8 +112,8 @@ tidak dipotong di `plan`: `board.mp4` harus tetap utuh dari detik 0 karena short
 memakainya ulang dan menghitung dari awal file. Karena itu juga `lead_in` **tidak**
 masuk `board_look_of()` — ia tidak mengubah satu piksel pun di `board.mp4`.
 
-**Video panjang berhenti di `outro` detik setelah langkah terakhir.** Kotak "selesai +"
-di sebelah "mulai −" (default 60, 0 = berhenti tepat di langkah terakhir), disimpan di
+**Video panjang berhenti di `outro` detik setelah langkah terakhir.** Kotak "Selesai +"
+di bawah preview (`windowInputs()`), sebelah "Mulai −" (default 60, 0 = berhenti tepat di langkah terakhir), disimpan di
 `meta.json` sebagai `outro` dan di-post ulang sebelum render seperti `lead_in`. Ini
 **menggantikan** aturan lama `HOLD_AFTER_BOARD` (board.mp4 habis + 60 dtk tetap, ≈ langkah
 terakhir + 63 dtk). Waktu langkah terakhir = jumlah semua durasi `plan` kecuali entri
