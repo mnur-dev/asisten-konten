@@ -28,17 +28,35 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
 **Tiap proyek dikerjakan per langkah.** Setelah URL + PGN, UI proyek adalah stepper
 (`STEPS`, `setStep()`): **1 Deteksi** (deteksi + timeline koreksi waktu) → **2 Tata letak**
-(preview dengan tab layer video panjang + mulai/selesai) → **3 Short** (ply/jeda/ekor +
-editor layout short) → **4 Tampilan & render** (warna papan, set bidak, tambahan, lalu
-render video panjang / short) → **5 Terbitkan** (thumbnail + paket upload). Langkah
-menentukan editor yang hidup: `PICKING_FOR` memetakan 2→`layout`, 3→`short`, 5→`thumb`,
-dan `draw()` menegakkannya tiap render. Proyek dibuka di langkah yang masuk akal
-(`defaultStep()`: belum deteksi → 1, belum ada hasil render → 2, selainnya → 5); langkah
+(preview dengan tab layer video panjang) → **3 Short** (ply/jeda/ekor + editor layout short)
+→ **4 Mulai & selesai** (preview frame hasil zoom + kotak Mulai −/Selesai + dan tombol "Pakai"
+untuk mulai/stop di detik yang tampil) → **5 Tampilan & render** (warna papan, set bidak,
+tambahan, lalu render video panjang / short) → **6 Terbitkan** (thumbnail + paket upload).
+Langkah menentukan editor yang hidup: `PICKING_FOR` memetakan 2→`layout`, 3→`short`,
+4→`window`, 6→`thumb`, dan `draw()` menegakkannya tiap render. Proyek dibuka di langkah yang masuk akal
+(`defaultStep()`: belum deteksi → 1, belum ada hasil render → 2, selainnya → 6); langkah
 yang prasyaratnya belum ada dinonaktifkan (`stepReady()`), yang sudah beres diberi ✓
 (`stepDone()`). Header proyek tanpa kartu dengan pill status berwarna; "Hapus proyek" di
 pojok kanan; log dilipat (`<details>`, terbuka saat busy/gagal). Di HP daftar proyek jadi
 laci (tombol "Proyek (n)", `toggleDrawer()`). Satu tampilan gelap yang disengaja; huruf
 Figtree (UI) + JetBrains Mono (angka/log).
+
+**Preview hasil jadi di langkah 5, tanpa render.** `finalPreviewCard()` menampilkan 5 frame
+video panjang: satu detik acak di tiap seperlima jendela mulai–selesai ("Acak lagi" untuk
+ganti). Tiap frame dari `GET /final-frame?t=` → `board_image()` untuk ply yang tampil di
+detik itu (tampilan sama dengan board.mp4: tema, bidak, eval bar, jam, badge, balik papan)
+lalu `render.composite_frame()`, yang memakai **`composite_stages()` yang sama** dengan
+`overlay_composite()` — filter grafnya dipisah justru supaya preview tidak bisa berbeda
+dari render. Tata letaknya juga dari satu helper, `long_layout()`, yang dipakai render.
+Terukur: 0,4–0,8 dtk per frame, 5 frame termuat ±3 dtk; dibanding frame `full-video.mp4`
+di detik yang sama selisih rata-rata ~3/255 per piksel (noise kompresi). File furniture
+preview ditulis ke folder sementara per request karena 5 request jalan bersamaan.
+
+**Mulai & selesai butuh deteksi.** Keduanya relatif terhadap langkah pertama/terakhir, jadi
+sebelum ada timestamp preview tidak bisa dipotong — langkah 3–5 terkunci sampai deteksi
+selesai. (Pernah membingungkan: di proyek yang belum dideteksi nilainya bisa disimpan tetapi
+preview tetap sepanjang siaran.) `window_set` di status menandai proyek yang pernah
+menyimpan mulai/selesai (✓ di langkah 4).
 
 **"Ikuti papan fisik" dan tab "Papan fisik" dihapus dari UI** (permintaan pengguna,
 2026-09-22). Endpoint `/retime` dan `/board-quad`, `core/physical.py`, dan kode picker quad
@@ -308,6 +326,27 @@ pindah channel/file. Isi awalnya dari `upload-templates.json` di root repo (giti
 berisi email kontak dan link donasi) — diambil 2026-09-22 dari video terbaru Pawn Initiate
 dan dari `upload-default-checkmate-theater.txt` di `/home/ubuntu/yt-analytics`; tombol
 "Jadikan default channel" menimpanya.
+
+**Saran judul oleh Claude Code (`core/titles.py`).** Tombol "Saran judul (Claude)" di kolom
+Judul paket upload meminta 5 judul yang menggabungkan tiga sumber: (1) judul video sumber
+(diambil sekali lewat `video.source_info()` / yt-dlp, disimpan di `meta.json` sebagai
+`source_title`/`source_channel`; hanya sudutnya yang dipakai, bukan kata-katanya), (2) fakta
+PGN (`pgn_facts()`: pemain + rating, event, hasil + cara menang, selisih rating dan apakah
+upset, panjang partai, momen brilliant/great/blunder/mistake dari `moves.json`, jam < 30 dtk),
+(3) pola channel: `title-patterns/pawn-initiate.md` (panduan tertulis) + 25 judul terbaik
+sejenis dan 40 judul terbaru dari `pawn-initiate.json` (supaya tidak mengulang). Dipanggil
+headless: `claude -p --tools "" --json-schema … --system-prompt …` di direktori sementara
+(CLAUDE.md repo tidak ikut), model `TITLE_MODEL` (default `claude-opus-5`). `--bare` tidak
+bisa dipakai karena mewajibkan API key, sedangkan server login dengan langganan. CLI dicari
+juga di `~/.local/bin` karena PATH unit systemd tidak memuatnya. Terukur: ±15–22 detik per
+5 judul. Hasil disimpan di `meta.json` → `title_suggestions["<channel>:<long|short>"]`.
+Baru tersedia untuk Pawn Initiate; channel lain butuh `title-patterns/<slug>.md` + `.json`.
+
+Temuan pola Pawn Initiate (1.353 video, 2026-09-22): di video panjang judul "X vs Y" dan
+tanda "!" justru lebih sering di separuh terbawah (37% / 38%) daripada di 10% teratas
+(18% / 12%); "When [pemain] [aksi]", sudut karakter/selisih rating/umur, dan kata kerja kuat
+yang menang. Perbarui datanya dengan `tools/tarik_judul_channel.py` (pakai venv yt-analytics);
+panduan `.md`-nya diperbarui manual.
 
 Upload lewat API sengaja **tidak** dibuat: project Cloud `sukaweb-yt-analytics` belum lolos
 YouTube API Services Audit, dan `videos.insert` dari project yang belum diaudit (dibuat

@@ -655,6 +655,65 @@ def zoom_crop_rect(size, zoom):
     return crop_w, crop_h, crop_x, crop_y
 
 
+def composite_stages(rect, logo_rects=None, blur_rects=None, furniture=None, zoom=None,
+                     size=None, freeze=None):
+    """The filter graph that turns the broadcast ([0:v]) plus a board ([1:v]) and an
+    optional furniture PNG ([2:v]) into the finished frame, ending at [v]. Shared by
+    overlay_composite (the render) and composite_frame (the step-5 preview), so a
+    preview can never drift from what the render will produce. `freeze` holds the
+    board's last frame for that many seconds (tpad) -- only meaningful for video."""
+    x, y, width, height = rect
+    zoom_active = bool(zoom and zoom.get("percent", 100) > 100)
+    label = "0:v"
+    stages = []
+    if zoom_active:
+        crop_w, crop_h, crop_x, crop_y = zoom_crop_rect(size, zoom)
+        out_w, out_h = size
+        stages.append(f"[{label}]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
+                      f"scale={out_w}:{out_h}[zoomed]")
+        label = "zoomed"
+    if logo_rects:
+        chain = ",".join(f"delogo=x={lx}:y={ly}:w={lw}:h={lh}:show=0" for lx, ly, lw, lh in logo_rects)
+        stages.append(f"[{label}]{chain}[clean]")
+        label = "clean"
+    for index, (bx, by, bw, bh) in enumerate(blur_rects or []):
+        # ffmpeg cannot blur a sub-region in place: cut the patch out, blur it, put it back
+        radius = max(2, min(bw, bh) // 6)
+        stages.append(f"[{label}]split=2[keep{index}][cut{index}]")
+        stages.append(f"[cut{index}]crop={bw}:{bh}:{bx}:{by},boxblur={radius}:2[soft{index}]")
+        stages.append(f"[keep{index}][soft{index}]overlay={bx}:{by}[blur{index}]")
+        label = f"blur{index}"
+    # board.mp4 starts at broadcast second 0 and never outlasts `end` by design, so
+    # freezing it for `end` seconds is always enough; -t cuts the excess.
+    tpad = f",tpad=stop_mode=clone:stop_duration={freeze:g}" if freeze else ""
+    stages.append(f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease{tpad}[b]")
+    board_out = "board" if furniture else "v"
+    stages.append(f"[{label}][b]overlay="
+                  f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
+    if furniture:
+        stages.append(f"[{board_out}][2:v]overlay=0:0[v]")
+    return stages
+
+
+def composite_frame(source, board_png, t, rect, logo_rects=None, blur_rects=None,
+                    furniture=None, zoom=None, size=None, width=960) -> bytes:
+    """One finished frame at broadcast second `t` as JPEG bytes: the same graph as the
+    render, with a still board image instead of board.mp4. Lets the render step show
+    what the long video will look like before anything has been rendered."""
+    stages = composite_stages(rect, logo_rects=logo_rects, blur_rects=blur_rects,
+                              furniture=furniture, zoom=zoom, size=size)
+    stages[-1] = stages[-1].removesuffix("[v]") + f",scale={width}:-2[v]"   # preview size
+    inputs = ["-ss", f"{max(0.0, t):.3f}", "-i", str(source), "-i", str(board_png)]
+    if furniture:
+        inputs += ["-i", str(furniture)]
+    out = subprocess.run(["ffmpeg", "-v", "error", *inputs, "-filter_complex", ";".join(stages),
+                          "-map", "[v]", "-frames:v", "1", "-f", "image2", "-c:v", "mjpeg", "-q:v", "4", "-"],
+                         capture_output=True)
+    if out.returncode or not out.stdout:
+        raise RuntimeError(f"Preview frame failed: {out.stderr.decode(errors='replace')[-300:]}")
+    return out.stdout
+
+
 def overlay_composite(source, board_video, output, rect, logo_rects=None, encoder=None,
                       blur_rects=None, furniture=None, zoom=None,
                       size=None, start=0.0, end=None):
@@ -692,36 +751,8 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
     which reuses that file and counts from its start -- is unaffected.
     """
     encoder = encoder or pick_encoder()
-    x, y, width, height = rect
-    zoom_active = bool(zoom and zoom.get("percent", 100) > 100)
-    label = "0:v"
-    stages = []
-    if zoom_active:
-        crop_w, crop_h, crop_x, crop_y = zoom_crop_rect(size, zoom)
-        out_w, out_h = size
-        stages.append(f"[{label}]crop={crop_w}:{crop_h}:{crop_x}:{crop_y},"
-                      f"scale={out_w}:{out_h}[zoomed]")
-        label = "zoomed"
-    if logo_rects:
-        chain = ",".join(f"delogo=x={lx}:y={ly}:w={lw}:h={lh}:show=0" for lx, ly, lw, lh in logo_rects)
-        stages.append(f"[{label}]{chain}[clean]")
-        label = "clean"
-    for index, (bx, by, bw, bh) in enumerate(blur_rects or []):
-        # ffmpeg cannot blur a sub-region in place: cut the patch out, blur it, put it back
-        radius = max(2, min(bw, bh) // 6)
-        stages.append(f"[{label}]split=2[keep{index}][cut{index}]")
-        stages.append(f"[cut{index}]crop={bw}:{bh}:{bx}:{by},boxblur={radius}:2[soft{index}]")
-        stages.append(f"[keep{index}][soft{index}]overlay={bx}:{by}[blur{index}]")
-        label = f"blur{index}"
-    # board.mp4 starts at broadcast second 0 and never outlasts `end` by design, so
-    # freezing it for `end` seconds is always enough; -t below cuts the excess.
-    freeze = f",tpad=stop_mode=clone:stop_duration={end:g}" if end else ""
-    stages.append(f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease{freeze}[b]")
-    board_out = "board" if furniture else "v"
-    stages.append(f"[{label}][b]overlay="
-                  f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
-    if furniture:
-        stages.append(f"[{board_out}][2:v]overlay=0:0[v]")
+    stages = composite_stages(rect, logo_rects=logo_rects, blur_rects=blur_rects,
+                              furniture=furniture, zoom=zoom, size=size, freeze=end)
 
     def build_command(enc):
         quality = ["-cq", "23"] if enc == "h264_nvenc" else ["-crf", "20", "-preset", "veryfast"]

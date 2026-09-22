@@ -114,7 +114,7 @@
            padding: 3px 8px; border: 1px solid #86b86b33; border-radius: 5px; background: var(--accent-soft); }
   a.file:hover { border-color: #86b86b88; }
   a.file.quiet { color: var(--muted); border-color: var(--line); background: transparent; }
-  .stepper { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
+  .stepper { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
   .stepper button { display: flex; align-items: center; gap: 9px; padding: 9px 11px; text-align: left;
                     background: var(--panel); min-width: 0; }
   .stepper .n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
@@ -130,6 +130,21 @@
   .render-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
   .render-item { border: 1px solid var(--line); border-radius: 7px; padding: 12px; display: flex;
                  flex-direction: column; gap: 9px; background: var(--panel-2); }
+  .suggest { margin: 0 0 14px; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: 7px; }
+  .suggest-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
+  .suggest-list button { width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto;
+                         gap: 2px 10px; padding: 8px 10px; border-color: var(--line); }
+  .suggest-list button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  .suggest-list .t { font-weight: 600; }
+  .suggest-list .len { color: var(--faint); align-self: start; }
+  .suggest-list .a { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .final-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .final-frame { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px;
+                 text-decoration: none; }
+  .final-frame img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px;
+                     background: var(--field); border: 1px solid var(--line); display: block; }
+  .final-frame:hover img { border-color: var(--accent); }
+  .final-frame b { color: var(--ink); font-weight: 500; }
   details.log { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
                 margin-bottom: 15px; }
   details.log summary { cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 12px;
@@ -362,21 +377,22 @@ const STEPS = [
   { n: 1, label: "Deteksi" },
   { n: 2, label: "Tata letak" },
   { n: 3, label: "Short" },
-  { n: 4, label: "Tampilan & render" },
-  { n: 5, label: "Terbitkan" },
+  { n: 4, label: "Mulai & selesai" },
+  { n: 5, label: "Tampilan & render" },
+  { n: 6, label: "Terbitkan" },
 ];
-const PICKING_FOR = { 2: "layout", 3: "short", 5: "thumb" };
+const PICKING_FOR = { 2: "layout", 3: "short", 4: "window", 6: "thumb" };
 let step = 1, stepFor = null;
 
 function defaultStep(s) {
   if (!s.waypoints) return 1;
   const outs = s.outputs || [];
   if (!outs.includes("full-video.mp4") && !outs.includes("short.mp4")) return 2;
-  return 5;
+  return 6;
 }
 function stepReady(n, s) {
   if (n === 1) return true;
-  if (n === 3 || n === 4) return !!s.waypoints;
+  if (n >= 3 && n <= 5) return !!s.waypoints;   // need move timestamps
   return !!s.width;
 }
 function stepDone(n, s) {
@@ -385,7 +401,8 @@ function stepDone(n, s) {
     : n === 2 ? !!(s.paste_rect || (s.logo_rects || []).length || (s.blur_rects || []).length
                    || s.brand_rect || s.name_rects?.white || s.name_rects?.black || s.source_zoom)
     : n === 3 ? !!s.has_short_layout
-    : n === 4 ? outs.includes("full-video.mp4") || outs.includes("short.mp4")
+    : n === 4 ? !!s.window_set
+    : n === 5 ? outs.includes("full-video.mp4") || outs.includes("short.mp4")
     : !!s.has_thumbnail;
 }
 
@@ -394,13 +411,13 @@ async function prepareStep(n) {
   if (n === 3 && !musicList.length) {
     try { musicList = (await api("api/sounds")).music; } catch (e) {}
   }
-  if (n === 5) {
+  if (n === 6) {
     await initThumb();
     if (!uploadTemplates) {
       try { uploadTemplates = (await api("api/upload-templates")).channels; } catch (e) {}
     }
   }
-  if (n === 3 || n === 5) draw();
+  if (n === 3 || n === 6) draw();
 }
 
 async function setStep(n) {
@@ -427,6 +444,38 @@ function stepFoot(n) {
   return `<div class="step-foot">
     ${prev ? `<button class="ghost" onclick="setStep(${prev.n})">← ${prev.label}</button>` : "<span></span>"}
     ${next ? `<button ${stepReady(next.n, state) ? "" : "disabled"} onclick="setStep(${next.n})">Lanjut: ${next.label} →</button>` : ""}
+  </div>`;
+}
+
+// Step 5: five frames of the long video as it WILL render (board look + layout +
+// zoom + mulai/selesai), composited per frame on the server -- no render needed.
+// One random second inside each fifth of the output window, so they span the video.
+let finalTimes = null, finalFor = null, finalSeed = 0;
+
+function pickFinalTimes(s) {
+  const w = outputWindow(s);
+  if (!w) return null;
+  const span = (w.hi - w.lo) / 5;
+  return [0, 1, 2, 3, 4].map((k) => Math.round((w.lo + span * (k + 0.15 + Math.random() * 0.7)) * 10) / 10);
+}
+function shuffleFinal() { finalTimes = pickFinalTimes(state); finalSeed = Date.now(); draw(); }
+
+function finalPreviewCard(s) {
+  const w = outputWindow(s);
+  if (!w) return "";
+  const key = `${current}:${w.lo}:${w.hi}`;
+  if (finalFor !== key || !finalTimes) { finalTimes = pickFinalTimes(s); finalFor = key; finalSeed = Date.now(); }
+  const src = (t, width) => `api/projects/${current}/final-frame?t=${t}&width=${width}&_=${lookStamp}-${finalSeed}`;
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+      ${stepHead("Preview hasil jadi", "5 frame acak dari video panjang dengan tampilan papan dan tata letak saat ini — belum dirender, tapi dibuat dengan proses yang sama persis.")}
+      <button onclick="shuffleFinal()">Acak lagi</button>
+    </div>
+    <div class="final-grid">${finalTimes.map((t) => `
+      <a class="final-frame" href="${src(t, 1920)}" target="_blank" title="Buka ukuran penuh">
+        <img src="${src(t, 720)}" alt="Frame di detik ${fmtTime(t - w.lo)} video jadi" loading="lazy">
+        <span><b class="num">${fmtTime(t - w.lo)}</b> di video jadi · siaran <span class="num">${fmtTime(t)}</span></span>
+      </a>`).join("")}</div>
   </div>`;
 }
 
@@ -484,7 +533,14 @@ function stepBody(s) {
     </div>
     ${stepFoot(3)}`;
   if (step === 4) return `
+    <div class="card">
+      ${stepHead("Mulai & selesai", "Potong siaran jadi video panjang: berapa detik sebelum langkah pertama dan setelah langkah terakhir yang ikut. Geser preview ke detik yang kamu mau, lalu “Pakai”.")}
+      ${pickerBody(s)}
+    </div>
+    ${stepFoot(4)}`;
+  if (step === 5) return `
     ${s.themes ? lookCard(s) : ""}
+    ${finalPreviewCard(s)}
     <div class="card">
       ${stepHead("Render", "Pakai tampilan papan di atas. Video panjang dan short dirender terpisah — short memakai ulang board.mp4, jadi cepat.")}
       <div class="render-grid">
@@ -508,15 +564,15 @@ function stepBody(s) {
         </div>
       </div>
     </div>
-    ${stepFoot(4)}`;
+    ${stepFoot(5)}`;
   return `
     <div class="card">
       ${stepHead("Thumbnail", "")}
       ${pickerBody(s)}
     </div>
     ${uploadFiles(s).length && uploadTemplates ? uploadCard(s)
-      : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 4.")}</div>`}
-    ${stepFoot(5)}`;
+      : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 5.")}</div>`}
+    ${stepFoot(6)}`;
 }
 const STATUS_TEXT = { new: "baru", downloading: "mengunduh", ready: "siap", detecting: "mendeteksi",
   retiming: "menyesuaikan waktu", evaluating: "mengevaluasi", rendering: "merender",
@@ -874,7 +930,8 @@ function renderPickInfo(t) {
   if (w) {
     const pos = Math.max(0, t - w.lo), total = w.hi - w.lo;
     const stop = Math.round(t - w.last), start = Math.round(w.first - t);
-    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}
+    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}`;
+    if (picking === "window") html += `
       <div class="row" style="margin-top:5px;gap:6px">
       ${stop >= 0
         ? `<span>Stop di sini → isi <b>selesai + ${stop}</b></span>
@@ -918,7 +975,7 @@ function scrubControls(id, at, duration, extra = "", min = 0) {
     <span id="${id}Total" class="hint">/ ${fmtTime(duration)}</span>
     ${extra}
   </div>
-  ${id === "pick" && picking !== "thumb" ? windowInputs() : ""}
+  ${id === "pick" && picking === "window" ? windowInputs() : ""}
   <div id="${id}Info" class="hint scrub-info" style="margin-top:6px"></div>`;
 }
 function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
@@ -989,7 +1046,7 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
 // The short is the exception -- its 9:16 canvas is a different picture -- so its
 // tab swaps in its own editor inside the same card.
 function pickerBody(s) {
-  const isLayout = picking === "layout", isThumb = picking === "thumb";
+  const isLayout = picking === "layout", isThumb = picking === "thumb", isWindow = picking === "window";
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
   const win = isThumb ? null : outputWindow(s);
@@ -1001,6 +1058,7 @@ function pickerBody(s) {
   const fixedSize = isLayout && spec.pairSize && !count ? spec.pairSize(s) : null;
   const hint = isThumb
     ? "<b>1. Pilih frame.</b> Geser ke momen yang ekspresinya paling kuat, lalu \"Pakai frame ini\" — itu yang dikirim ke AI. Frame thumbnail diambil dari siaran utuh (tanpa zoom)."
+    : isWindow ? ""
     : isLayout ? spec.hint
     : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital.";
   return `
@@ -1018,12 +1076,12 @@ function pickerBody(s) {
              style="width:70px;font-size:12px;padding:3px 6px">%
       <span class="hint">(100% = tanpa zoom)</span>
     </div>` : ""}
-    ${!isThumb ? `<p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>` : ""}
+    ${!isThumb && !isWindow ? `<p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>` : ""}
     <div id="pickwrap" class="pickarea" style="position:relative;display:inline-block;
-         cursor:${isThumb ? "default" : isZoom ? "move" : "crosshair"};user-select:none;-webkit-user-drag:none">
+         cursor:${isThumb || isWindow ? "default" : isZoom ? "move" : "crosshair"};user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
            src="${pickFrameSrc(at)}">
-      ${scrubVideo("pick", at, isLayout && !isZoom ? zoomCrop(s) : null)}
+      ${scrubVideo("pick", at, (isLayout && !isZoom) || isWindow ? zoomCrop(s) : null)}
       <div id="pickghosts"></div>
       <div id="pickexisting"></div>
       ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
@@ -1039,7 +1097,8 @@ function pickerBody(s) {
     ${scrubControls("pick", at, hi, isThumb
       ? `<button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>` : "", lo)}
     <div class="row" style="margin-top:10px">
-      ${isThumb
+      ${isWindow ? ""
+        : isThumb
         ? `<span class="hint">${s.has_thumb_source ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.` : "Belum ada frame tersimpan."}</span>
            ${s.has_thumb_source ? `<button onclick="pickAt=${s.thumb_time};draw()" style="padding:3px 10px;font-size:12px">Lompat ke sana</button>` : ""}`
         : isZoom
@@ -1051,7 +1110,7 @@ function pickerBody(s) {
         : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
-      <span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>
+      ${isWindow ? "" : `<span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>`}
     </div>
     ${isLayout && layer === "brand" ? brandUpload(s) : ""}
     ${isThumb ? thumbSteps(s) : ""}`;
@@ -1082,7 +1141,7 @@ function previewCard(s) {
 function drawGhosts() {
   const img = $("pickimg"), host = $("pickghosts");
   if (!img || !host || !state.width) return;
-  if (picking === "thumb") { host.innerHTML = ""; return; }   // the thumbnail is its own picture
+  if (picking === "thumb" || picking === "window") { host.innerHTML = ""; return; }
   const scale = img.clientWidth / state.width;
   const zoomedFrame = picking === "layout" && layer !== "zoom";
   const crop = zoomCrop(state);
@@ -1164,7 +1223,7 @@ function shortEditorCard(s) {
             shortOpts.plies, shortOpts.pad, shortOpts.tail))}</span>
         </div>` : ""}
         <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
-        <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
+        <div id="pickwrap" class="pickarea" style="position:relative;display:inline-block;cursor:crosshair;
              user-select:none;-webkit-user-drag:none;background:#000">
           <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
                src="api/projects/${current}/short-frame?plies=${plies}&width=380&_=${lookStamp}">
@@ -1967,7 +2026,7 @@ async function clearShortLayer() {
 }
 
 function pickFrameSrc(t) {
-  const zoomed = picking === "layout" && layer !== "zoom";
+  const zoomed = (picking === "layout" && layer !== "zoom") || picking === "window";
   return `api/projects/${current}/frame?t=${t}&width=880${zoomed ? "&zoomed=1" : ""}`;
 }
 
@@ -1978,7 +2037,7 @@ function wirePicker() {
   wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; },
                                        onLabel: renderPickInfo });
   renderPickInfo(+$("pickRange").value);
-  if (picking === "thumb") return;
+  if (picking === "thumb" || picking === "window") return;
   if (picking === "board") wireQuadPicker();
   else if (layer === "zoom") wireZoomPicker();
   else wireRectPicker();
@@ -2926,7 +2985,8 @@ function uploadCard(s) {
       <span class="row" style="gap:8px"><span id="upCount-title">${uploadCount("title")}</span>
       <button onclick="copyUpload('title', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
     <input id="up-title" value="${escape_(uploadForm.title)}" oninput="onUploadInput('title', this.value)"
-           style="margin:5px 0 12px">
+           style="margin:5px 0 8px">
+    ${titleSuggestBox(s)}
 
     <div class="row" style="justify-content:space-between"><label style="margin:0">Deskripsi</label>
       <span class="row" style="gap:8px"><span id="upCount-description">${uploadCount("description")}</span>
@@ -2958,6 +3018,50 @@ function uploadCard(s) {
       <b>${escape_(uploadTemplates?.[uploadChannel]?.name || "")}</b> (ganti lewat foto profil →
       Ganti akun) sebelum mengunggah.</p>
   </div>`;
+}
+
+// Five titles from Claude Code (core/titles.py): source title + PGN + the channel's
+// measured patterns. Only channels with a pattern file in title-patterns/ get it.
+const TITLE_PATTERN_CHANNELS = ["pawn-initiate"];
+let titleBusy = false, titleError = "";
+
+function titleSuggestBox(s) {
+  const kind = uploadFile === "short.mp4" ? "short" : "long";
+  const stored = (s.title_suggestions || {})[`${uploadChannel}:${kind}`];
+  if (!TITLE_PATTERN_CHANNELS.includes(uploadChannel)) return `<p class="hint" style="margin:0 0 12px">
+    Saran judul otomatis baru tersedia untuk Pawn Initiate (pola channel ini belum dipelajari).</p>`;
+  return `<div class="suggest">
+    <div class="row" style="gap:8px">
+      <button id="titleSuggestBtn" ${titleBusy ? "disabled" : ""} onclick="suggestTitles()">
+        ${titleBusy ? "Claude sedang menulis… (±20 dtk)" : stored ? "Buat 5 saran baru" : "Saran judul (Claude)"}</button>
+      <span class="hint">dari judul sumber + PGN + pola judul ${escape_(uploadTemplates?.[uploadChannel]?.name || "")}
+        ${kind === "short" ? "(Shorts)" : "(video panjang)"}</span>
+    </div>
+    ${titleError ? `<p class="err" style="margin:6px 0 0">${escape_(titleError)}</p>` : ""}
+    ${stored ? `<ol class="suggest-list">${stored.titles.map((t, i) => `
+      <li><button class="ghost" onclick="useSuggestedTitle(${i})" title="Pakai judul ini">
+        <span class="t">${escape_(t.title)}</span><span class="num len">${[...t.title].length}</span>
+        <span class="a">${escape_(t.angle)}</span></button></li>`).join("")}</ol>
+      <p class="hint" style="margin:4px 0 0">Klik untuk memakai · dibuat ${escape_(stored.created)}</p>` : ""}
+  </div>`;
+}
+
+async function suggestTitles() {
+  titleBusy = true; titleError = ""; draw();
+  try {
+    const result = await post("title-suggestions", {
+      kind: uploadFile === "short.mp4" ? "short" : "long", channel: uploadChannel });
+    titleBusy = false;
+    await refresh();                   // the suggestions are stored on the project
+    return result;
+  } catch (e) { titleBusy = false; titleError = e.message; draw(); }
+}
+
+function useSuggestedTitle(index) {
+  const kind = uploadFile === "short.mp4" ? "short" : "long";
+  const title = state.title_suggestions[`${uploadChannel}:${kind}`].titles[index].title;
+  $("up-title").value = title;
+  onUploadInput("title", title);
 }
 
 async function switchUpload(apply) {
