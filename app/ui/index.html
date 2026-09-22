@@ -138,6 +138,13 @@
   .suggest-list .t { font-weight: 600; }
   .suggest-list .len { color: var(--faint); align-self: start; }
   .suggest-list .a { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 400; }
+  .final-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+  .final-frame { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 12px;
+                 text-decoration: none; }
+  .final-frame img { width: 100%; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 6px;
+                     background: var(--field); border: 1px solid var(--line); display: block; }
+  .final-frame:hover img { border-color: var(--accent); }
+  .final-frame b { color: var(--ink); font-weight: 500; }
   details.log { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
                 margin-bottom: 15px; }
   details.log summary { cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 12px;
@@ -440,6 +447,38 @@ function stepFoot(n) {
   </div>`;
 }
 
+// Step 5: five frames of the long video as it WILL render (board look + layout +
+// zoom + mulai/selesai), composited per frame on the server -- no render needed.
+// One random second inside each fifth of the output window, so they span the video.
+let finalTimes = null, finalFor = null, finalSeed = 0;
+
+function pickFinalTimes(s) {
+  const w = outputWindow(s);
+  if (!w) return null;
+  const span = (w.hi - w.lo) / 5;
+  return [0, 1, 2, 3, 4].map((k) => Math.round((w.lo + span * (k + 0.15 + Math.random() * 0.7)) * 10) / 10);
+}
+function shuffleFinal() { finalTimes = pickFinalTimes(state); finalSeed = Date.now(); draw(); }
+
+function finalPreviewCard(s) {
+  const w = outputWindow(s);
+  if (!w) return "";
+  const key = `${current}:${w.lo}:${w.hi}`;
+  if (finalFor !== key || !finalTimes) { finalTimes = pickFinalTimes(s); finalFor = key; finalSeed = Date.now(); }
+  const src = (t, width) => `api/projects/${current}/final-frame?t=${t}&width=${width}&_=${lookStamp}-${finalSeed}`;
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;margin-bottom:12px">
+      ${stepHead("Preview hasil jadi", "5 frame acak dari video panjang dengan tampilan papan dan tata letak saat ini — belum dirender, tapi dibuat dengan proses yang sama persis.")}
+      <button onclick="shuffleFinal()">Acak lagi</button>
+    </div>
+    <div class="final-grid">${finalTimes.map((t) => `
+      <a class="final-frame" href="${src(t, 1920)}" target="_blank" title="Buka ukuran penuh">
+        <img src="${src(t, 720)}" alt="Frame di detik ${fmtTime(t - w.lo)} video jadi" loading="lazy">
+        <span><b class="num">${fmtTime(t - w.lo)}</b> di video jadi · siaran <span class="num">${fmtTime(t)}</span></span>
+      </a>`).join("")}</div>
+  </div>`;
+}
+
 function stepHead(title, text) {
   return `<div class="step-head"><h3>${title}</h3>${text ? `<p>${text}</p>` : ""}</div>`;
 }
@@ -501,6 +540,7 @@ function stepBody(s) {
     ${stepFoot(4)}`;
   if (step === 5) return `
     ${s.themes ? lookCard(s) : ""}
+    ${finalPreviewCard(s)}
     <div class="card">
       ${stepHead("Render", "Pakai tampilan papan di atas. Video panjang dan short dirender terpisah — short memakai ulang board.mp4, jadi cepat.")}
       <div class="render-grid">
@@ -1183,7 +1223,7 @@ function shortEditorCard(s) {
             shortOpts.plies, shortOpts.pad, shortOpts.tail))}</span>
         </div>` : ""}
         <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
-        <div id="pickwrap" style="position:relative;display:inline-block;cursor:crosshair;
+        <div id="pickwrap" class="pickarea" style="position:relative;display:inline-block;cursor:crosshair;
              user-select:none;-webkit-user-drag:none;background:#000">
           <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
                src="api/projects/${current}/short-frame?plies=${plies}&width=380&_=${lookStamp}">

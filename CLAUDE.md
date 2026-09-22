@@ -41,6 +41,17 @@ pojok kanan; log dilipat (`<details>`, terbuka saat busy/gagal). Di HP daftar pr
 laci (tombol "Proyek (n)", `toggleDrawer()`). Satu tampilan gelap yang disengaja; huruf
 Figtree (UI) + JetBrains Mono (angka/log).
 
+**Preview hasil jadi di langkah 5, tanpa render.** `finalPreviewCard()` menampilkan 5 frame
+video panjang: satu detik acak di tiap seperlima jendela mulai–selesai ("Acak lagi" untuk
+ganti). Tiap frame dari `GET /final-frame?t=` → `board_image()` untuk ply yang tampil di
+detik itu (tampilan sama dengan board.mp4: tema, bidak, eval bar, jam, badge, balik papan)
+lalu `render.composite_frame()`, yang memakai **`composite_stages()` yang sama** dengan
+`overlay_composite()` — filter grafnya dipisah justru supaya preview tidak bisa berbeda
+dari render. Tata letaknya juga dari satu helper, `long_layout()`, yang dipakai render.
+Terukur: 0,4–0,8 dtk per frame, 5 frame termuat ±3 dtk; dibanding frame `full-video.mp4`
+di detik yang sama selisih rata-rata ~3/255 per piksel (noise kompresi). File furniture
+preview ditulis ke folder sementara per request karena 5 request jalan bersamaan.
+
 **Mulai & selesai butuh deteksi.** Keduanya relatif terhadap langkah pertama/terakhir, jadi
 sebelum ada timestamp preview tidak bisa dipotong — langkah 3–5 terkunci sampai deteksi
 selesai. (Pernah membingungkan: di proyek yang belum dideteksi nilainya bisa disimpan tetapi

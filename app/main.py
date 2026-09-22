@@ -18,7 +18,7 @@ from core.detect import detect
 from core.pgn import clock_series, has_clocks, parse_pgn
 from core.render import (DEFAULT_THEME, SHORT_BLUR_DARKEN, SHORT_BLUR_SIGMA, SHORT_PAD,
                          SHORT_SIZE, SHORT_TAIL, THEMES, board_image, caption_window,
-                         durations_from_waypoints, fit_size, furniture_layer, overlay_composite,
+                         composite_frame, durations_from_waypoints, fit_size, furniture_layer, overlay_composite,
                          render, short_clip, short_reference_time, short_text_groups,
                          short_text_layer, short_top_height, zoom_crop_rect)
 from core.video import download, make_preview, probe, source_info
@@ -832,6 +832,76 @@ def build_short(path: Path, meta: dict, data: dict, plies: int, pad: float,
         staged.replace(path / "short.mp4")
 
 
+
+def long_layout(path: Path, meta: dict, data: dict, furniture_path: Path | None = None):
+    """Everything the long video's composite needs from the project's layout: frame
+    size, where the board goes, logo/blur boxes and the furniture PNG (channel logo +
+    nameplates, None when there is neither). Used by the render and by the step-5
+    preview frames, so the two can't disagree."""
+    size = (meta.get("width"), meta.get("height"))
+    logo_rects = clamp_rects(meta.get("logo_rects"), *size)
+    blur_rects = clamp_rects(meta.get("blur_rects"), *size)
+    if paste := meta.get("paste_rect"):
+        paste_rect = tuple(paste)
+    else:
+        x, y, side = pad_square(tuple(data["overlay_rect"]), *size)
+        paste_rect = (x, y, side, side)
+    furniture = None
+    plates = meta.get("name_rects") or {}
+    nameplates = [(meta.get(side), plates.get(side))
+                  for side in ("white", "black") if plates.get(side)]
+    brand = path / meta["brand_file"] if meta.get("brand_file") else None
+    if nameplates or (brand and meta.get("brand_rect")):
+        furniture = furniture_path or path / ".furniture.png"
+        furniture_layer(size, brand=brand if meta.get("brand_rect") else None,
+                        brand_rect=meta.get("brand_rect"), nameplates=nameplates).save(furniture)
+    return size, paste_rect, logo_rects, blur_rects, furniture
+
+
+@app.get("/api/projects/{project_id}/final-frame")
+def final_frame(project_id: str, t: float, width: int = 960):
+    """One frame of the long video as it WILL render, at broadcast second `t`: the
+    board drawn for the ply on screen then (same look as board.mp4: theme, pieces,
+    eval bar, clocks, badge, flip) composited with the current layout. No render needed."""
+    import tempfile
+    path = folder(project_id)
+    meta = read_meta(path)
+    if not (path / "timestamps.json").is_file():
+        raise HTTPException(400, "Run detection first")
+    data = json.loads((path / "timestamps.json").read_text(encoding="utf-8"))
+    timeline = parse_pgn((path / "input.pgn").read_text(encoding="utf-8"))
+    plan = durations_from_waypoints(data["waypoints"])
+    elapsed, ply = 0.0, 0
+    for index, seconds in plan[:-1]:          # plan[k] shows ply k until the next move lands
+        if elapsed + seconds > t:
+            break
+        elapsed += seconds
+        ply = index + 1
+    ply = min(ply, len(timeline["moves"]))
+    scores = None
+    if meta.get("eval_bar") and (path / "evals.json").is_file():
+        evals = json.loads((path / "evals.json").read_text(encoding="utf-8"))
+        scores = evals[ply - 1] if 0 < ply <= len(evals) else {"cp": 0}
+    series = clock_series(timeline) if meta.get("clock_box") else None
+    grades = classification_of(path)
+    badge = (grades[ply - 1].get("label") if badges_on(meta) and 0 < ply <= len(grades) else None)
+    board = board_image(timeline, ply, fit_size(evaluation=bool(scores is not None), clocks=bool(series)),
+                        orientation="black" if meta.get("flip_board") else "white",
+                        theme=meta.get("theme", DEFAULT_THEME), piece_set=meta.get("piece_set", pieces.BUNDLED),
+                        evaluation=scores, clocks=series[min(ply, len(series) - 1)] if series else None,
+                        classification=badge)
+    with tempfile.TemporaryDirectory() as scratch:
+        board_png = Path(scratch) / "board.png"
+        board.save(board_png)
+        # five of these run at once, so the furniture PNG lives in this request's scratch dir
+        size, paste_rect, logo_rects, blur_rects, furniture = long_layout(
+            path, meta, data, furniture_path=Path(scratch) / "furniture.png")
+        jpeg = composite_frame(meta["video"], board_png, t, paste_rect, logo_rects=logo_rects,
+                               blur_rects=blur_rects, furniture=furniture,
+                               zoom=meta.get("source_zoom"), size=size, width=max(160, min(width, 1920)))
+    return Response(jpeg, media_type="image/jpeg", headers={"Cache-Control": "no-store"})
+
+
 @app.post("/api/projects/{project_id}/render")
 def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
     """Render the long video: board.mp4, then full-video.mp4 pasted over the
@@ -853,24 +923,7 @@ def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
         plan = durations_from_waypoints(data["waypoints"])
         build_board(path, meta, timeline, plan)
         if full_video:
-            size = (meta.get("width"), meta.get("height"))
-            logo_rects = clamp_rects(meta.get("logo_rects"), *size)
-            blur_rects = clamp_rects(meta.get("blur_rects"), *size)
-            if paste := meta.get("paste_rect"):
-                paste_rect = tuple(paste)
-            else:
-                x, y, side = pad_square(tuple(data["overlay_rect"]), *size)
-                paste_rect = (x, y, side, side)
-
-            furniture = None
-            plates = meta.get("name_rects") or {}
-            nameplates = [(meta.get(side), plates.get(side))
-                          for side in ("white", "black") if plates.get(side)]
-            brand = path / meta["brand_file"] if meta.get("brand_file") else None
-            if nameplates or (brand and meta.get("brand_rect")):
-                furniture = path / ".furniture.png"
-                furniture_layer(size, brand=brand if meta.get("brand_rect") else None,
-                                brand_rect=meta.get("brand_rect"), nameplates=nameplates).save(furniture)
+            size, paste_rect, logo_rects, blur_rects, furniture = long_layout(path, meta, data)
 
             # plan[0] holds the starting position until the first move lands, so its
             # duration IS the first move's timestamp on the broadcast's clock. Both
