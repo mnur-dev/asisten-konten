@@ -667,8 +667,8 @@ function scrubVideo(id, at, crop) {
     : "left:0;top:0;width:100%;height:100%";
   return `<div id="${id}Cover" style="position:absolute;inset:0;overflow:hidden;display:none;
        pointer-events:none;border-radius:7px;background:#000">
-    <video id="${id}Video" muted playsinline preload="metadata"
-           src="api/projects/${current}/video#t=${at}"
+    <video id="${id}Video" muted playsinline preload="none"
+           data-src="api/projects/${current}/${state.preview_video ? "preview-video" : "video"}"
            style="position:absolute;${place};max-width:none"></video></div>`;
 }
 function scrubControls(id, at, duration, extra = "", min = 0) {
@@ -688,12 +688,27 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
         box = $(`${id}Time`), play = $(`${id}Play`);
   if (!video || !img) return;
   let active = false;            // true while playing or dragging: the video is on top
+  // Nothing is fetched until the first drag or play. Every redraw (tab switch, box
+  // saved) builds a fresh <video>, and a desktop browser used to pull ~2 MB of the
+  // source for each one straight away; phones don't preload, which is why the same
+  // page felt lighter there. `data-src` is the 540p keyframe-every-second copy once
+  // the server has made it (preview_video), the source file until then.
+  const seekTo = (t) => {
+    if (!video.getAttribute("src")) {
+      video.preload = "auto";           // with "none", setting src alone loads nothing
+      video.src = video.dataset.src;
+      video.addEventListener("loadedmetadata", () => { video.currentTime = +range.value; }, { once: true });
+      video.load();
+      return;
+    }
+    video.currentTime = t;
+  };
   const label = (t) => {
     range.value = t;
     if (document.activeElement !== box) box.value = fmtTime(t);
     if (onLabel) onLabel(t);
   };
-  const seek = (t) => { active = true; video.currentTime = t; label(t); onTime(t); };
+  const seek = (t) => { active = true; seekTo(t); label(t); onTime(t); };
   const settle = (t) => {
     t = Math.round(t * 10) / 10;
     active = false;
@@ -713,7 +728,8 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
     if (!video.paused) { video.pause(); return; }
     active = true;
     const t = +range.value;
-    if (Math.abs(video.currentTime - t) > 0.3) video.currentTime = t;
+    if (!video.getAttribute("src")) seekTo(t);
+    else if (Math.abs(video.currentTime - t) > 0.3) video.currentTime = t;
     play.textContent = "❚❚";
     video.play().catch((e) => { play.textContent = "▶"; active = false; alert(e.message); });
   };
@@ -724,7 +740,7 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
     if (t === null) return;
     const clamped = Math.min(Math.max(t, +range.min || 0), +range.max || t);
     if (!video.paused) video.pause();
-    video.currentTime = clamped;
+    if (video.getAttribute("src")) video.currentTime = clamped;
     settle(clamped);
   };
 }

@@ -21,7 +21,7 @@ from core.render import (DEFAULT_THEME, SHORT_BLUR_DARKEN, SHORT_BLUR_SIGMA, SHO
                          durations_from_waypoints, fit_size, furniture_layer, overlay_composite,
                          render, short_clip, short_reference_time, short_text_groups,
                          short_text_layer, short_top_height, zoom_crop_rect)
-from core.video import download, probe
+from core.video import download, make_preview, probe
 
 ROOT = Path(__file__).parents[1]
 PROJECTS = ROOT / "projects"
@@ -91,6 +91,37 @@ def background(project_id: str, work):
     thread = threading.Thread(target=runner, daemon=True)
     _running[project_id] = thread
     thread.start()
+
+
+_previewing: set[str] = set()
+
+
+def preview_video_of(project_id: str, path: Path, meta: dict) -> bool:
+    """True when the scrubber's light copy (preview.mp4) is ready and newer than the
+    source. Otherwise starts making it in its own thread -- not background(), which
+    would mark the project busy and grey out every button for a file the user never
+    asked for -- and the UI keeps using the source video until it lands. Skipped while
+    the project is busy so it never competes with a download, detection or render."""
+    preview = path / "preview.mp4"
+    source = Path(meta.get("video") or "")
+    if not source.is_file():
+        return False
+    if preview.is_file() and preview.stat().st_mtime >= source.stat().st_mtime:
+        return True
+    if project_id in _previewing or project_id in _running:
+        return False
+    _previewing.add(project_id)
+
+    def work():
+        try:
+            make_preview(source, preview)
+        except Exception as error:                      # the source video still works
+            logging.getLogger("core").warning("preview.mp4 gagal dibuat: %s", error)
+        finally:
+            _previewing.discard(project_id)
+
+    threading.Thread(target=work, daemon=True).start()
+    return False
 
 
 class NewProject(BaseModel):
@@ -314,6 +345,7 @@ def status(project_id: str):
     path = folder(project_id)
     meta = read_meta(path)
     meta["busy"] = project_id in _running
+    meta["preview_video"] = preview_video_of(project_id, path, meta)
     log = path / "log.txt"
     meta["log"] = log.read_text(encoding="utf-8", errors="replace")[-4000:] if log.is_file() else ""
     grades = classification_of(path)
@@ -1125,6 +1157,15 @@ def source_video(project_id: str):
     if not video.is_file():
         raise HTTPException(404, f"Video missing: {video}")
     return FileResponse(video, media_type="video/mp4")
+
+
+@app.get("/api/projects/{project_id}/preview-video")
+def preview_video(project_id: str):
+    """The scrubber's light copy (see preview_video_of). 404 until it has been made."""
+    preview = folder(project_id) / "preview.mp4"
+    if not preview.is_file():
+        raise HTTPException(404, "Preview video not ready")
+    return FileResponse(preview, media_type="video/mp4")
 
 
 @app.get("/api/projects/{project_id}/board")

@@ -37,6 +37,18 @@ tidak di-zoom). Pengecualian: editor judul thumbnail menggambar di atas hasil AI
 keduanya memang gambar yang berbeda. `setPreviewTab()` yang mengatur `picking`/`layer`;
 `toggleShort()`/`toggleThumb()`/`setLayer()` tinggal pembungkusnya.
 
+**Scrubber memutar `preview.mp4`, bukan video sumber.** Siaran datang dengan keyframe
+tiap ~5 detik di 1080p, jadi tiap geser slider browser men-decode sampai 150 frame
+full-HD — ringan di decoder hardware HP, berat di PC yang men-decode lewat CPU. Terukur
+headless, 10 geser: sumber 6,5–7,1 detik, proxy 0,47–0,87 detik. `video.make_preview()`
+membuat salinan 540p tanpa audio, keyframe tiap detik (118 MB → 34 MB, ~150 detik di VPS
+pada nice 10). `preview_video_of()` membuatnya sekali per proyek di thread sendiri
+(bukan `background()`, supaya proyek tidak ditandai busy), dipicu dari poll status dan
+dilewati selama proyek busy; sampai jadi, UI memakai `/video`. Kedua, `<video>`
+scrubber `preload="none"` dan baru diberi `src` saat pertama digeser/diputar — tiap
+redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB per elemen
+(7 ganti tab = 15,8 MB; sekarang 0). Preview short masih memakai `/video`.
+
 6. **Tata letak** (opsional) — semua penempatan di `full-video.mp4` ditandai manual
    dengan menarik kotak di atas satu frame contoh. Panel "Tata letak" di UI punya
    beberapa layer, semuanya memakai picker yang sama:

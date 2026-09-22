@@ -95,6 +95,31 @@ def probe(path) -> dict:
     }
 
 
+PREVIEW_HEIGHT = 540
+PREVIEW_GOP = 30            # one keyframe a second at 30 fps
+
+
+def make_preview(source, output) -> Path:
+    """A light copy of the broadcast for the UI's scrubber: 540p, silent, and a
+    keyframe every second. Broadcast files come with ~5 s between keyframes at
+    1080p, so every slider step made the browser decode up to 150 full-HD frames --
+    quick on a phone's hardware decoder, heavy on a desktop decoding in software.
+    Measured on a 9-minute broadcast: 118 MB -> 34 MB, ~150 s on the VPS at nice 10.
+    Written to a temp name and renamed, so a half-made file is never served."""
+    output = Path(output)
+    partial = output.with_name(output.stem + ".partial.mp4")
+    command = ["nice", "-n", "10", "ffmpeg", "-v", "error", "-y", "-i", str(source),
+               "-vf", f"scale=-2:{PREVIEW_HEIGHT}", "-c:v", "libx264", "-preset", "veryfast",
+               "-crf", "28", "-g", str(PREVIEW_GOP), "-keyint_min", str(PREVIEW_GOP),
+               "-sc_threshold", "0", "-pix_fmt", "yuv420p", "-an", "-movflags", "+faststart",
+               str(partial)]
+    if os.name == "nt":                                   # no `nice` on Windows
+        command = command[3:]
+    subprocess.run(command, check=True, capture_output=True)
+    partial.replace(output)
+    return output
+
+
 def has_audio(path) -> bool:
     out = subprocess.run(
         ["ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index",
