@@ -26,6 +26,15 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    filter `perspective` ffmpeg sebelum dianalisis di `core/physical.py`.
 4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
+**Tata letak UI.** Header proyek tanpa kartu (nama, pemain, ply, durasi, pill status
+berwarna: hijau selesai, biru berdenyut sedang jalan, merah gagal) lalu `.flow`: lima
+kelompok sesuai urutan kerja — Deteksi, Atur, Video panjang, Short, Terbitkan — dengan
+file hasil di kelompoknya. "Hapus proyek" di pojok kanan bergaya bahaya samar. Log
+dilipat (`<details>`), terbuka otomatis saat busy/gagal. Di HP daftar proyek jadi laci
+(tombol "Proyek (n)" di appbar, `toggleDrawer()`), tertutup lagi saat proyek dibuka.
+Satu tampilan gelap yang disengaja (tidak ada tema terang); token warna di `:root`,
+huruf Figtree (UI) + JetBrains Mono (angka/log) dengan cadangan font sistem.
+
 **Satu preview untuk semua pengaturan.** Tombol "Preview & atur" membuka satu kartu
 (`previewCard()`) dengan tab: Zoom · Papan render · Hapus logo · Blur · Logo saya · Nama
 putih · Nama hitam · Papan fisik · Thumbnail · Short. Tab video panjang, papan fisik, dan
