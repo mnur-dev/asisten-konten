@@ -281,6 +281,24 @@ filter, dan di Windows path itu mengandung titik dua drive plus backslash yang h
 lolos dua lapis escaping — rapuh dan sulit dilacak kalau salah. PIL juga menyamakan
 kendali tipografinya dengan papan yang sudah digambar PIL.
 
+**Paket upload manual, bukan upload API.** Tombol "Paket upload" membuka kartu per
+channel (Pawn Initiate / Checkmate Theater) dan per file (video panjang / short): judul,
+deskripsi, tag dengan penghitung batas YouTube (100 / 5000 / 500 — tag berspasi dihitung
++2 karena disimpan bertanda kutip) dan tombol Salin, plus unduh video & thumbnail.
+Drafnya di `meta.json` → `upload_drafts["<channel>:<file>"]`, otomatis tersimpan saat
+pindah channel/file. Isi awalnya dari `upload-templates.json` di root repo (gitignored:
+berisi email kontak dan link donasi) — diambil 2026-09-22 dari video terbaru Pawn Initiate
+dan dari `upload-default-checkmate-theater.txt` di `/home/ubuntu/yt-analytics`; tombol
+"Jadikan default channel" menimpanya.
+
+Upload lewat API sengaja **tidak** dibuat: project Cloud `sukaweb-yt-analytics` belum lolos
+YouTube API Services Audit, dan `videos.insert` dari project yang belum diaudit (dibuat
+setelah 28 Jul 2020) mengunci video jadi private — terkunci, tidak bisa diubah ke publik
+atau dibanding, harus diunggah ulang. Kuotanya sendiri bukan masalah (100 upload/hari).
+Kalau audit lolos: token Checkmate Theater (`token-piece-invest.json`) sudah ber-scope
+`youtube`; Pawn Initiate masih read-only dan butuh consent ulang dengan scope tulis yang
+tetap membawa scope analytics, supaya `collect.py` di yt-analytics tidak patah.
+
 ## Deploy
 
 `https://yt.sukaweb.my.id/chess-vids/` — **tanpa login**, pilihan pengguna, walau

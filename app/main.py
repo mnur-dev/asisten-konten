@@ -361,7 +361,9 @@ def status(project_id: str):
              "loss": (grades[w["ply"] - 1] or {}).get("loss") if w["ply"] <= len(grades) else None}
             for w in data["waypoints"] if w["ply"] in moves]
         meta["overlay_rect"] = data.get("overlay_rect")
-    meta["outputs"] = [f.name for f in path.glob("*.mp4") if f.name != "source.mp4"]
+    # source.mp4 is the input and preview.mp4 the scrubber's proxy -- neither is output
+    meta["outputs"] = [f.name for f in path.glob("*.mp4")
+                       if f.name not in ("source.mp4", "preview.mp4") and not f.name.endswith(".partial.mp4")]
     meta["themes"] = list(THEMES)
     meta["piece_sets"] = pieces.available_sets()
     meta.setdefault("theme", DEFAULT_THEME)
@@ -1157,6 +1159,75 @@ def source_video(project_id: str):
     if not video.is_file():
         raise HTTPException(404, f"Video missing: {video}")
     return FileResponse(video, media_type="video/mp4")
+
+
+# Manual upload package: the app does not upload (the Cloud project is unaudited, so
+# API uploads would be locked private). It prepares per-channel title/description/
+# tags to copy into YouTube Studio or the app, next to the files to download.
+UPLOAD_CHANNELS = {
+    "pawn-initiate": "Pawn Initiate",
+    "checkmate-theater": "Checkmate Theater",
+}
+UPLOAD_TEMPLATES = ROOT / "upload-templates.json"
+
+
+def upload_templates() -> dict:
+    """Default description + tags per channel. Gitignored (contact email, donation
+    links), editable from the UI; a channel missing from the file starts blank."""
+    try:
+        stored = json.loads(UPLOAD_TEMPLATES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stored = {}
+    return {slug: {"name": name, "description": stored.get(slug, {}).get("description", ""),
+                   "tags": stored.get(slug, {}).get("tags", [])}
+            for slug, name in UPLOAD_CHANNELS.items()}
+
+
+@app.get("/api/upload-templates")
+def get_upload_templates():
+    return {"channels": upload_templates()}
+
+
+class UploadText(BaseModel):
+    description: str = ""
+    tags: list[str] = []
+
+
+@app.post("/api/upload-templates/{slug}")
+def set_upload_template(slug: str, body: UploadText):
+    """Make this description + tags the channel's default for every project."""
+    if slug not in UPLOAD_CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    try:
+        stored = json.loads(UPLOAD_TEMPLATES.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        stored = {}
+    stored[slug] = {"description": body.description, "tags": [t for t in body.tags if t.strip()]}
+    UPLOAD_TEMPLATES.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
+    return {"ok": True}
+
+
+class UploadDraft(BaseModel):
+    channel: str
+    file: str
+    title: str = ""
+    description: str = ""
+    tags: list[str] = []
+
+
+@app.post("/api/projects/{project_id}/upload-draft")
+def set_upload_draft(project_id: str, body: UploadDraft):
+    """This project's title/description/tags for one channel + file, kept in
+    meta.json under upload_drafts["<channel>:<file>"] so a reload keeps them."""
+    if body.channel not in UPLOAD_CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    path = folder(project_id)
+    drafts = read_meta(path).get("upload_drafts") or {}
+    drafts[f"{body.channel}:{body.file}"] = {
+        "title": body.title, "description": body.description,
+        "tags": [t for t in body.tags if t.strip()]}
+    update(path, upload_drafts=drafts)
+    return {"ok": True}
 
 
 @app.get("/api/projects/{project_id}/preview-video")

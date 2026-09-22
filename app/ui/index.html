@@ -74,6 +74,9 @@
   .err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
   .scrub-row { max-width: 880px; }
+  a.btnlink { display: inline-block; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
+             padding: 7px 13px; border-radius: 6px; text-decoration: none; }
+  a.btnlink.primary { background: var(--accent); border-color: var(--accent); color: #10210c; font-weight: 600; }
   .pickarea, .pickarea img { -webkit-touch-callout: none; -webkit-user-select: none; }
   .touch-only { display: none; }
   @media (hover: none) and (pointer: coarse) { .touch-only { display: block; } }
@@ -221,7 +224,7 @@ async function create() {
 
 async function open_(id) {
   if (dirty && !confirm("Ada perubahan waktu yang belum disimpan. Tinggalkan?")) return;
-  current = id; selected = null; dirty = false; picking = false; pick = null; pickAt = null;
+  current = id; selected = null; dirty = false; picking = false; pick = null; pickAt = null; uploadFormKey = null; uploadDirty = false;
   segStart = null; clearInterval(rafId);
   clearInterval(spRafId); spWindowsKey = null; spLoopActive = false;
   spTime = null; spPlaying = false; spWindows = []; spFramePlies = null; spScrubbing = false;
@@ -295,6 +298,9 @@ function draw() {
                     ? "Render short.mp4 saja, pakai board.mp4 dari render sebelumnya (video panjang tidak disentuh)"
                     : "Render short.mp4 saja -- board.mp4 dibuat dulu karena belum ada, jadi kali ini lebih lama"}">
             Render short</button>
+          <button ${uploadFiles(s).length ? "" : "disabled"} onclick="toggleUpload()"
+                  title="Judul, deskripsi, tag per channel + unduh video/thumbnail untuk diunggah manual">
+            Paket upload</button>
           <button ${busy ? "disabled" : ""} title="Hapus proyek ini"
                   onclick="deleteProject('${current}','${escape_(s.name).replace(/'/g, "\\'")}')">Hapus</button>
         </div>
@@ -319,6 +325,7 @@ function draw() {
     </div>
     ${s.themes ? lookCard(s) : ""}
     ${picking ? previewCard(s) : ""}
+    ${uploadOpen && uploadFiles(s).length ? uploadCard(s) : ""}
     ${s.log ? `<div class="card"><div class="hint" style="margin-bottom:7px">Log</div>
        <pre id="log">${escape_(s.log)}</pre></div>` : ""}
     ${s.waypoints ? waypointsCard(s) : ""}`;
@@ -2612,6 +2619,162 @@ function drawExistingThumb() {
     wireBoxDrag(div, item.rect, { W, H, px, onDrop: (moved) => saveThumbTexts(
       state.thumb_texts.map((t, j) => (j === index ? { ...t, rect: moved } : t))) });
   });
+}
+
+// ------------------------------------------------------------------ upload package
+// Manual upload: the Cloud project is unaudited, so an API upload would land locked
+// private. This card prepares everything to paste into YouTube Studio / the app for
+// the chosen channel -- title, description, tags -- next to the files to download.
+let uploadOpen = false, uploadTemplates = null, uploadChannel = "pawn-initiate",
+    uploadFile = null, uploadForm = null, uploadFormKey = null, uploadDirty = false;
+const UPLOAD_LIMITS = { title: 100, description: 5000, tags: 500 };
+
+async function toggleUpload() {
+  uploadOpen = !uploadOpen;
+  if (uploadOpen && !uploadTemplates) {
+    try { uploadTemplates = (await api("api/upload-templates")).channels; }
+    catch (e) { alert(e.message); uploadOpen = false; }
+  }
+  draw();
+  if (uploadOpen) $("uploadCard")?.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+
+function uploadFiles(s) {
+  return ["full-video.mp4", "short.mp4"].filter((f) => (s.outputs || []).includes(f));
+}
+
+// The draft saved for this channel + file, else the project name + channel defaults.
+function loadUploadForm(s) {
+  const files = uploadFiles(s);
+  if (!files.includes(uploadFile)) uploadFile = files[0] || null;
+  const key = `${uploadChannel}:${uploadFile}`;
+  if (uploadFormKey === key && uploadForm) return;
+  const draft = (s.upload_drafts || {})[key];
+  const template = uploadTemplates?.[uploadChannel] || { description: "", tags: [] };
+  uploadForm = draft
+    ? { title: draft.title, description: draft.description, tags: draft.tags.join(", ") }
+    : { title: s.name || "", description: template.description, tags: template.tags.join(", ") };
+  uploadFormKey = key; uploadDirty = false;
+}
+
+function tagList(text) { return text.split(",").map((t) => t.trim()).filter(Boolean); }
+// YouTube's own count: a tag containing a space is stored quoted (+2), plus commas.
+function tagsLength(text) {
+  const tags = tagList(text);
+  return tags.reduce((n, t) => n + t.length + (t.includes(" ") ? 2 : 0), 0) + Math.max(0, tags.length - 1);
+}
+function uploadCount(field) {
+  const value = uploadForm[field];
+  const used = field === "tags" ? tagsLength(value) : [...value].length;
+  const limit = UPLOAD_LIMITS[field];
+  return `<span class="${used > limit ? "err" : "hint"}">${used}/${limit}</span>`;
+}
+
+function uploadCard(s) {
+  loadUploadForm(s);
+  const files = uploadFiles(s);
+  const safeName = (s.name || current).replace(/[\\/:*?"<>|]+/g, " ").trim();
+  const chip = (on, label, onclick) => `<button onclick="${onclick}" style="padding:5px 12px;${on
+    ? "border-color:var(--accent);color:var(--accent)" : ""}">${label}</button>`;
+  return `<div class="card" id="uploadCard">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b style="font-size:13px">Paket upload YouTube</b>
+      <button onclick="toggleUpload()">Tutup</button>
+    </div>
+    <p class="hint" style="margin:0 0 10px">Unggah manual lewat YouTube Studio / app: unduh
+      filenya, lalu salin judul, deskripsi, dan tag di bawah. (Upload otomatis lewat API
+      belum dipakai — sebelum app lolos audit YouTube, hasilnya terkunci private.)</p>
+    <div class="row" style="margin-bottom:8px;gap:6px"><span class="hint">Channel:</span>
+      ${Object.entries(uploadTemplates || {}).map(([slug, c]) =>
+        chip(slug === uploadChannel, escape_(c.name), `setUploadChannel('${slug}')`)).join("")}</div>
+    <div class="row" style="margin-bottom:12px;gap:6px"><span class="hint">File:</span>
+      ${files.map((f) => chip(f === uploadFile, f === "short.mp4" ? "Short" : "Video panjang",
+        `setUploadFile('${f}')`)).join("")}</div>
+
+    <div class="row" style="justify-content:space-between"><label style="margin:0">Judul</label>
+      <span class="row" style="gap:8px"><span id="upCount-title">${uploadCount("title")}</span>
+      <button onclick="copyUpload('title', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
+    <input id="up-title" value="${escape_(uploadForm.title)}" oninput="onUploadInput('title', this.value)"
+           style="margin:5px 0 12px">
+
+    <div class="row" style="justify-content:space-between"><label style="margin:0">Deskripsi</label>
+      <span class="row" style="gap:8px"><span id="upCount-description">${uploadCount("description")}</span>
+      <button onclick="copyUpload('description', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
+    <textarea id="up-description" rows="10" oninput="onUploadInput('description', this.value)"
+              style="margin:5px 0 12px;font:13px/1.5 system-ui,sans-serif">${escape_(uploadForm.description)}</textarea>
+
+    <div class="row" style="justify-content:space-between"><label style="margin:0">Tag (pisahkan dengan koma)</label>
+      <span class="row" style="gap:8px"><span id="upCount-tags">${uploadCount("tags")}</span>
+      <button onclick="copyUpload('tags', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
+    <textarea id="up-tags" rows="3" oninput="onUploadInput('tags', this.value)"
+              style="margin:5px 0 12px;font:13px/1.5 system-ui,sans-serif;min-height:70px">${escape_(uploadForm.tags)}</textarea>
+
+    <div class="row" style="gap:8px">
+      <button id="upSave" ${uploadDirty ? 'class="primary"' : "disabled"} onclick="saveUploadDraft()">
+        ${uploadDirty ? "Simpan draf" : "Draf tersimpan"}</button>
+      <button onclick="saveUploadTemplate(this)"
+              title="Deskripsi & tag ini jadi isi awal untuk proyek lain di channel yang sama">
+        Jadikan default channel</button>
+    </div>
+    <div class="row" style="gap:8px;margin-top:12px">
+      ${uploadFile ? `<a class="btnlink primary" href="api/projects/${current}/file/${uploadFile}"
+          download="${escape_(safeName)}${uploadFile === "short.mp4" ? " (short)" : ""}.mp4">Unduh video</a>` : ""}
+      ${s.has_thumbnail && uploadFile !== "short.mp4" ? `<a class="btnlink" href="api/projects/${current}/file/thumbnail.png"
+          download="${escape_(safeName)}.png">Unduh thumbnail</a>` : ""}
+      <a class="btnlink" href="https://studio.youtube.com" target="_blank" rel="noopener">Buka YouTube Studio ↗</a>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Di Studio, pastikan channel yang aktif
+      <b>${escape_(uploadTemplates?.[uploadChannel]?.name || "")}</b> (ganti lewat foto profil →
+      Ganti akun) sebelum mengunggah.</p>
+  </div>`;
+}
+
+async function switchUpload(apply) {
+  if (uploadDirty) await saveUploadDraft(true);     // never lose typed text on a switch
+  apply(); uploadFormKey = null; draw();
+}
+function setUploadChannel(slug) { switchUpload(() => { uploadChannel = slug; }); }
+function setUploadFile(file) { switchUpload(() => { uploadFile = file; }); }
+
+function onUploadInput(field, value) {
+  uploadForm[field] = value; uploadDirty = true;
+  const count = $(`upCount-${field}`); if (count) count.innerHTML = uploadCount(field);
+  const button = $("upSave");
+  if (button) { button.disabled = false; button.className = "primary"; button.textContent = "Simpan draf"; }
+}
+
+async function saveUploadDraft(quiet) {
+  try {
+    await post("upload-draft", { channel: uploadChannel, file: uploadFile, title: uploadForm.title,
+                                 description: uploadForm.description, tags: tagList(uploadForm.tags) });
+    uploadDirty = false;
+    state.upload_drafts = { ...(state.upload_drafts || {}), [`${uploadChannel}:${uploadFile}`]: {
+      title: uploadForm.title, description: uploadForm.description, tags: tagList(uploadForm.tags) } };
+    if (!quiet) draw();
+  } catch (e) { alert(e.message); }
+}
+
+async function saveUploadTemplate(button) {
+  const name = uploadTemplates[uploadChannel].name;
+  if (!confirm(`Jadikan deskripsi & tag ini isi awal untuk semua proyek baru di ${name}?`)) return;
+  try {
+    const body = { description: uploadForm.description, tags: tagList(uploadForm.tags) };
+    await api(`api/upload-templates/${uploadChannel}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    uploadTemplates[uploadChannel] = { ...uploadTemplates[uploadChannel], ...body };
+    button.textContent = "Default tersimpan ✓";
+  } catch (e) { alert(e.message); }
+}
+
+async function copyUpload(field, button) {
+  const text = field === "tags" ? tagList(uploadForm.tags).join(", ") : uploadForm[field];
+  try { await navigator.clipboard.writeText(text); }
+  catch (e) {                                   // older browsers / non-secure context
+    const box = $(`up-${field}`); box.select(); document.execCommand("copy");
+  }
+  const old = button.textContent;
+  button.textContent = "Tersalin ✓";
+  setTimeout(() => { button.textContent = old; }, 1500);
 }
 
 // Touch -> mouse bridge for every box picker (all of them are .pickarea and

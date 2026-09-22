@@ -26,3 +26,6 @@ openrouter-models.json
 
 # exported browser login for yt-dlp (core/video.cookie_file) -- never commit
 cookies.txt
+
+# per-channel upload description/tags (contact email, donation links)
+upload-templates.json
