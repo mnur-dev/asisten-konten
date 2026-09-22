@@ -72,8 +72,8 @@ redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB pe
    `wireShortBoxDrag()` sendiri. Kotak tersimpan langsung disimpan saat dilepas.
    Akibatnya kotak baru harus mulai digambar di luar kotak yang sudah ada.
    Rentang slider preview tata letak = jendela video jadi (`outputWindow()`: langkah 1
-   − mulai → langkah terakhir + selesai, dari nilai kotak yang sedang terisi, belum
-   perlu disimpan). Di bawahnya `renderPickInfo()` menampilkan posisi di video jadi,
+   − mulai → langkah terakhir + selesai, dari nilai yang **tersimpan** — preview baru menyesuaikan setelah
+   tombol Simpan). Di bawahnya `renderPickInfo()` menampilkan posisi di video jadi,
    sisa durasi, dan angka "selesai +" / "mulai −" supaya video berhenti/mulai di detik
    yang sedang tampil; tombol "Pakai" langsung menyimpannya. Sebelum deteksi (belum ada
    timestamp) slider tetap sepanjang siaran.
@@ -98,7 +98,7 @@ situ hitam; ini sudah pernah salah sekali. Karena mengubah piksel `board.mp4`,
 **Video panjang mulai di langkah pertama (`lead_in`).** Siaran punya menit-menit
 pembuka yang tidak ada isinya — pemain duduk, wasit bicara, papan belum jalan; di 13
 proyek yang ada jarak langkah pertamanya 3–182 detik. `full-video.mp4` sekarang mulai
-di langkah 1, dan kotak "Mulai −" (di bawah preview, sebelahan dengan "Selesai +"; tersimpan saat diubah) menyisakan sekian detik siaran
+di langkah 1, dan kotak "Mulai −" (di bawah preview, sebelahan dengan "Selesai +"; disimpan lewat tombol Simpan/Enter, lalu preview di-refresh) menyisakan sekian detik siaran
 sebelum itu (0 = langsung di langkah 1, 60 = satu menit sebelumnya). Nilainya disimpan
 di `meta.json` sebagai `lead_in` dan di-post ulang tepat sebelum render, seperti
 short-cut, supaya angka yang dirender selalu angka yang terlihat di kotaknya.

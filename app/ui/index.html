@@ -594,14 +594,14 @@ function zoomCrop(s) {
 }
 // The stretch of broadcast the long video will actually contain: from `leadIn`
 // seconds before the first move to `outro` seconds after the last one -- the same
-// arithmetic start_render does. Uses the boxes' live values, so the layout preview
-// follows an edit before it is saved. null before detection (no timestamps yet).
+// arithmetic start_render does. Uses the SAVED values: the preview re-fits when
+// "Simpan" is pressed, not on every keystroke. null before detection (no timestamps).
 function outputWindow(s) {
   const times = (s.waypoints || []).map((w) => w.timestamp).filter((t) => t !== null && t !== undefined);
   if (!times.length) return null;
   const first = times[0], last = times[times.length - 1];
-  const lo = Math.max(0, first - leadIn);
-  const hi = Math.min(s.duration || Infinity, Math.max(lo + 1, last + outro));
+  const lo = Math.max(0, first - (s.lead_in ?? 0));
+  const hi = Math.min(s.duration || Infinity, Math.max(lo + 1, last + (s.outro ?? 60)));
   return { first, last, lo, hi };
 }
 
@@ -631,24 +631,12 @@ function renderPickInfo(t) {
   if (html !== pickInfoHtml) { host.innerHTML = html; pickInfoHtml = html; }
 }
 
-// Re-fit the preview's slider to the output window after mulai/selesai change.
-function refitPickWindow() {
-  const range = $("pickRange");
-  if (!range || !state || picking === "thumb") return;
-  const w = outputWindow(state);
-  const lo = w ? w.lo : 0, hi = w ? w.hi : (state.duration || 60);
-  range.min = lo; range.max = hi;
-  const total = $("pickTotal");
-  if (total) total.textContent = `/ ${fmtTime(hi)}`;
-  renderPickInfo(+range.value);
-}
-
 async function useWindowValue(kind, value) {
-  if (kind === "outro") { outro = value; if ($("outro")) $("outro").value = value; }
-  else { leadIn = value; if ($("leadIn")) $("leadIn").value = value; }
-  refitPickWindow();
-  try { await post(kind === "outro" ? "outro" : "lead-in", { seconds: value }); }
-  catch (e) { alert(e.message); }
+  if (kind === "outro") outro = value; else leadIn = value;
+  try {
+    await post(kind === "outro" ? "outro" : "lead-in", { seconds: value });
+    await refresh();
+  } catch (e) { alert(e.message); }
 }
 
 function scrubVideo(id, at, crop) {
@@ -1056,7 +1044,7 @@ function shortParams() { return { ...shortOpts }; }
 function setLeadIn(value) {
   const number = parseFloat(value);
   leadIn = Math.max(0, isFinite(number) ? number : 0);
-  refitPickWindow();
+  refreshWindowButton();
 }
 
 // "mulai −" / "selesai +" for the long video, under the preview whose slider they
@@ -1067,25 +1055,45 @@ function windowInputs() {
     <span style="${group}"><span class="hint">Mulai −</span>
       <input id="leadIn" type="number" min="0" step="5" value="${leadIn}"
              title="Detik siaran sebelum langkah pertama. 0 = video langsung mulai di langkah 1; 60 = mulai satu menit sebelumnya."
-             style="width:64px;padding:5px 6px" oninput="setLeadIn(this.value)" onchange="saveWindow('lead-in')">
+             style="width:64px;padding:5px 6px" oninput="setLeadIn(this.value)" onkeydown="if(event.key==='Enter') saveWindow()">
       <span class="hint">dtk sebelum langkah 1</span></span>
     <span style="${group}"><span class="hint">Selesai +</span>
       <input id="outro" type="number" min="0" step="5" value="${outro}"
              title="Detik siaran setelah langkah terakhir. 0 = video berhenti tepat di langkah terakhir; 60 = satu menit sesudahnya (papan terakhir tetap tampil)."
-             style="width:64px;padding:5px 6px" oninput="setOutro(this.value)" onchange="saveWindow('outro')">
+             style="width:64px;padding:5px 6px" oninput="setOutro(this.value)" onkeydown="if(event.key==='Enter') saveWindow()">
       <span class="hint">dtk setelah langkah terakhir</span></span>
+    <button id="windowSave" ${windowDirty() ? 'class="primary"' : "disabled"} onclick="saveWindow()"
+            title="Simpan mulai & selesai; preview langsung menyesuaikan">
+      ${windowDirty() ? "Simpan" : "Tersimpan"}</button>
   </div>`;
 }
 
-async function saveWindow(kind) {
-  try { await post(kind, { seconds: kind === "outro" ? outro : leadIn }); }
-  catch (e) { alert(e.message); }
+function windowDirty() {
+  return !!state && (leadIn !== (state.lead_in ?? 0) || outro !== (state.outro ?? 60));
+}
+function refreshWindowButton() {
+  const button = $("windowSave");
+  if (!button) return;
+  const dirty = windowDirty();
+  button.disabled = !dirty;
+  button.className = dirty ? "primary" : "";
+  button.textContent = dirty ? "Simpan" : "Tersimpan";
+}
+
+// Both values in one go, then a full refresh so the preview's slider, the
+// "di video jadi" line and the stop/start hints all re-fit to what was saved.
+async function saveWindow() {
+  try {
+    await post("lead-in", { seconds: leadIn });
+    await post("outro", { seconds: outro });
+    await refresh();
+  } catch (e) { alert(e.message); }
 }
 
 function setOutro(value) {
   const number = parseFloat(value);
   outro = Math.max(0, isFinite(number) ? number : 0);
-  refitPickWindow();
+  refreshWindowButton();
 }
 
 function shortOptsDirty(s) {
