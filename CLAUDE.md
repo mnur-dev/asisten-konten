@@ -309,6 +309,27 @@ berisi email kontak dan link donasi) — diambil 2026-09-22 dari video terbaru P
 dan dari `upload-default-checkmate-theater.txt` di `/home/ubuntu/yt-analytics`; tombol
 "Jadikan default channel" menimpanya.
 
+**Saran judul oleh Claude Code (`core/titles.py`).** Tombol "Saran judul (Claude)" di kolom
+Judul paket upload meminta 5 judul yang menggabungkan tiga sumber: (1) judul video sumber
+(diambil sekali lewat `video.source_info()` / yt-dlp, disimpan di `meta.json` sebagai
+`source_title`/`source_channel`; hanya sudutnya yang dipakai, bukan kata-katanya), (2) fakta
+PGN (`pgn_facts()`: pemain + rating, event, hasil + cara menang, selisih rating dan apakah
+upset, panjang partai, momen brilliant/great/blunder/mistake dari `moves.json`, jam < 30 dtk),
+(3) pola channel: `title-patterns/pawn-initiate.md` (panduan tertulis) + 25 judul terbaik
+sejenis dan 40 judul terbaru dari `pawn-initiate.json` (supaya tidak mengulang). Dipanggil
+headless: `claude -p --tools "" --json-schema … --system-prompt …` di direktori sementara
+(CLAUDE.md repo tidak ikut), model `TITLE_MODEL` (default `claude-opus-5`). `--bare` tidak
+bisa dipakai karena mewajibkan API key, sedangkan server login dengan langganan. CLI dicari
+juga di `~/.local/bin` karena PATH unit systemd tidak memuatnya. Terukur: ±15–22 detik per
+5 judul. Hasil disimpan di `meta.json` → `title_suggestions["<channel>:<long|short>"]`.
+Baru tersedia untuk Pawn Initiate; channel lain butuh `title-patterns/<slug>.md` + `.json`.
+
+Temuan pola Pawn Initiate (1.353 video, 2026-09-22): di video panjang judul "X vs Y" dan
+tanda "!" justru lebih sering di separuh terbawah (37% / 38%) daripada di 10% teratas
+(18% / 12%); "When [pemain] [aksi]", sudut karakter/selisih rating/umur, dan kata kerja kuat
+yang menang. Perbarui datanya dengan `tools/tarik_judul_channel.py` (pakai venv yt-analytics);
+panduan `.md`-nya diperbarui manual.
+
 Upload lewat API sengaja **tidak** dibuat: project Cloud `sukaweb-yt-analytics` belum lolos
 YouTube API Services Audit, dan `videos.insert` dari project yang belum diaudit (dibuat
 setelah 28 Jul 2020) mengunci video jadi private — terkunci, tidak bisa diubah ke publik

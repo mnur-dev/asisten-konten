@@ -13,7 +13,7 @@ from fastapi.responses import FileResponse, HTMLResponse, Response
 from PIL import Image
 from pydantic import BaseModel
 
-from core import audio, classify, evaluation, physical, pieces, thumbnail
+from core import audio, classify, evaluation, physical, pieces, thumbnail, titles
 from core.detect import detect
 from core.pgn import clock_series, has_clocks, parse_pgn
 from core.render import (DEFAULT_THEME, SHORT_BLUR_DARKEN, SHORT_BLUR_SIGMA, SHORT_PAD,
@@ -21,7 +21,7 @@ from core.render import (DEFAULT_THEME, SHORT_BLUR_DARKEN, SHORT_BLUR_SIGMA, SHO
                          durations_from_waypoints, fit_size, furniture_layer, overlay_composite,
                          render, short_clip, short_reference_time, short_text_groups,
                          short_text_layer, short_top_height, zoom_crop_rect)
-from core.video import download, make_preview, probe
+from core.video import download, make_preview, probe, source_info
 
 ROOT = Path(__file__).parents[1]
 PROJECTS = ROOT / "projects"
@@ -1205,6 +1205,37 @@ def set_upload_template(slug: str, body: UploadText):
     stored[slug] = {"description": body.description, "tags": [t for t in body.tags if t.strip()]}
     UPLOAD_TEMPLATES.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"ok": True}
+
+
+class TitleRequest(BaseModel):
+    kind: str = "long"                # "long" | "short"
+    channel: str = "pawn-initiate"
+
+
+@app.post("/api/projects/{project_id}/title-suggestions")
+def title_suggestions(project_id: str, body: TitleRequest):
+    """Five titles from Claude Code, combining the source video's title, the PGN and
+    the channel's measured patterns (core/titles.py). Runs in the request (FastAPI
+    puts plain `def` endpoints on a worker thread); takes ~10-40 s. The source title
+    is looked up once with yt-dlp and cached in meta.json."""
+    if body.kind not in ("long", "short"):
+        raise HTTPException(400, "kind must be long or short")
+    path = folder(project_id)
+    meta = read_meta(path)
+    if not (titles.PATTERNS / f"{body.channel}.md").is_file():
+        raise HTTPException(400, f"Belum ada pola judul untuk channel {body.channel}")
+    if not meta.get("source_title") and meta.get("video_url"):
+        info = source_info(meta["video_url"])
+        if info:
+            meta = update(path, source_title=info["title"], source_channel=info["channel"])
+    try:
+        result = titles.suggest(path, meta, body.kind, body.channel)
+    except Exception as error:
+        raise HTTPException(502, str(error) or type(error).__name__)
+    stored = meta.get("title_suggestions") or {}
+    stored[f"{body.channel}:{body.kind}"] = {"titles": result, "created": time.strftime("%Y-%m-%d %H:%M")}
+    update(path, title_suggestions=stored)
+    return {"titles": result, "source_title": meta.get("source_title")}
 
 
 class UploadDraft(BaseModel):

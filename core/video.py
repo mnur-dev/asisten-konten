@@ -95,6 +95,24 @@ def probe(path) -> dict:
     }
 
 
+def source_info(url) -> dict:
+    """Title and uploader of the source video, without downloading it -- the title
+    suggester works from it. Same cookie-first variants as download(), for the same
+    bot-check reason; {} when every attempt fails, since a missing title only
+    weakens the suggestions rather than blocking them."""
+    variants = [[]]
+    if cookies := cookie_file():
+        variants.insert(0, ["--cookies", str(cookies), "--remote-components", "ejs:github"])
+    for extra in variants:
+        out = subprocess.run([sys.executable, "-m", "yt_dlp", *extra, "--skip-download",
+                              "--no-playlist", "--dump-single-json", url],
+                             capture_output=True, text=True, timeout=120)
+        if out.returncode == 0 and out.stdout.strip():
+            data = json.loads(out.stdout)
+            return {"title": data.get("title") or "", "channel": data.get("uploader") or data.get("channel") or ""}
+    return {}
+
+
 PREVIEW_HEIGHT = 540
 PREVIEW_GOP = 30            # one keyframe a second at 30 fps
 
