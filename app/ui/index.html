@@ -114,7 +114,7 @@
            padding: 3px 8px; border: 1px solid #86b86b33; border-radius: 5px; background: var(--accent-soft); }
   a.file:hover { border-color: #86b86b88; }
   a.file.quiet { color: var(--muted); border-color: var(--line); background: transparent; }
-  .stepper { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
+  .stepper { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
   .stepper button { display: flex; align-items: center; gap: 9px; padding: 9px 11px; text-align: left;
                     background: var(--panel); min-width: 0; }
   .stepper .n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
@@ -370,21 +370,22 @@ const STEPS = [
   { n: 1, label: "Deteksi" },
   { n: 2, label: "Tata letak" },
   { n: 3, label: "Short" },
-  { n: 4, label: "Tampilan & render" },
-  { n: 5, label: "Terbitkan" },
+  { n: 4, label: "Mulai & selesai" },
+  { n: 5, label: "Tampilan & render" },
+  { n: 6, label: "Terbitkan" },
 ];
-const PICKING_FOR = { 2: "layout", 3: "short", 5: "thumb" };
+const PICKING_FOR = { 2: "layout", 3: "short", 4: "window", 6: "thumb" };
 let step = 1, stepFor = null;
 
 function defaultStep(s) {
   if (!s.waypoints) return 1;
   const outs = s.outputs || [];
   if (!outs.includes("full-video.mp4") && !outs.includes("short.mp4")) return 2;
-  return 5;
+  return 6;
 }
 function stepReady(n, s) {
   if (n === 1) return true;
-  if (n === 3 || n === 4) return !!s.waypoints;
+  if (n >= 3 && n <= 5) return !!s.waypoints;   // need move timestamps
   return !!s.width;
 }
 function stepDone(n, s) {
@@ -393,7 +394,8 @@ function stepDone(n, s) {
     : n === 2 ? !!(s.paste_rect || (s.logo_rects || []).length || (s.blur_rects || []).length
                    || s.brand_rect || s.name_rects?.white || s.name_rects?.black || s.source_zoom)
     : n === 3 ? !!s.has_short_layout
-    : n === 4 ? outs.includes("full-video.mp4") || outs.includes("short.mp4")
+    : n === 4 ? !!s.window_set
+    : n === 5 ? outs.includes("full-video.mp4") || outs.includes("short.mp4")
     : !!s.has_thumbnail;
 }
 
@@ -402,13 +404,13 @@ async function prepareStep(n) {
   if (n === 3 && !musicList.length) {
     try { musicList = (await api("api/sounds")).music; } catch (e) {}
   }
-  if (n === 5) {
+  if (n === 6) {
     await initThumb();
     if (!uploadTemplates) {
       try { uploadTemplates = (await api("api/upload-templates")).channels; } catch (e) {}
     }
   }
-  if (n === 3 || n === 5) draw();
+  if (n === 3 || n === 6) draw();
 }
 
 async function setStep(n) {
@@ -492,6 +494,12 @@ function stepBody(s) {
     </div>
     ${stepFoot(3)}`;
   if (step === 4) return `
+    <div class="card">
+      ${stepHead("Mulai & selesai", "Potong siaran jadi video panjang: berapa detik sebelum langkah pertama dan setelah langkah terakhir yang ikut. Geser preview ke detik yang kamu mau, lalu “Pakai”.")}
+      ${pickerBody(s)}
+    </div>
+    ${stepFoot(4)}`;
+  if (step === 5) return `
     ${s.themes ? lookCard(s) : ""}
     <div class="card">
       ${stepHead("Render", "Pakai tampilan papan di atas. Video panjang dan short dirender terpisah — short memakai ulang board.mp4, jadi cepat.")}
@@ -516,15 +524,15 @@ function stepBody(s) {
         </div>
       </div>
     </div>
-    ${stepFoot(4)}`;
+    ${stepFoot(5)}`;
   return `
     <div class="card">
       ${stepHead("Thumbnail", "")}
       ${pickerBody(s)}
     </div>
     ${uploadFiles(s).length && uploadTemplates ? uploadCard(s)
-      : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 4.")}</div>`}
-    ${stepFoot(5)}`;
+      : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 5.")}</div>`}
+    ${stepFoot(6)}`;
 }
 const STATUS_TEXT = { new: "baru", downloading: "mengunduh", ready: "siap", detecting: "mendeteksi",
   retiming: "menyesuaikan waktu", evaluating: "mengevaluasi", rendering: "merender",
@@ -882,7 +890,8 @@ function renderPickInfo(t) {
   if (w) {
     const pos = Math.max(0, t - w.lo), total = w.hi - w.lo;
     const stop = Math.round(t - w.last), start = Math.round(w.first - t);
-    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}
+    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}`;
+    if (picking === "window") html += `
       <div class="row" style="margin-top:5px;gap:6px">
       ${stop >= 0
         ? `<span>Stop di sini → isi <b>selesai + ${stop}</b></span>
@@ -926,7 +935,7 @@ function scrubControls(id, at, duration, extra = "", min = 0) {
     <span id="${id}Total" class="hint">/ ${fmtTime(duration)}</span>
     ${extra}
   </div>
-  ${id === "pick" && picking !== "thumb" ? windowInputs() : ""}
+  ${id === "pick" && picking === "window" ? windowInputs() : ""}
   <div id="${id}Info" class="hint scrub-info" style="margin-top:6px"></div>`;
 }
 function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
@@ -997,7 +1006,7 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
 // The short is the exception -- its 9:16 canvas is a different picture -- so its
 // tab swaps in its own editor inside the same card.
 function pickerBody(s) {
-  const isLayout = picking === "layout", isThumb = picking === "thumb";
+  const isLayout = picking === "layout", isThumb = picking === "thumb", isWindow = picking === "window";
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
   const win = isThumb ? null : outputWindow(s);
@@ -1009,6 +1018,7 @@ function pickerBody(s) {
   const fixedSize = isLayout && spec.pairSize && !count ? spec.pairSize(s) : null;
   const hint = isThumb
     ? "<b>1. Pilih frame.</b> Geser ke momen yang ekspresinya paling kuat, lalu \"Pakai frame ini\" — itu yang dikirim ke AI. Frame thumbnail diambil dari siaran utuh (tanpa zoom)."
+    : isWindow ? ""
     : isLayout ? spec.hint
     : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital.";
   return `
@@ -1026,12 +1036,12 @@ function pickerBody(s) {
              style="width:70px;font-size:12px;padding:3px 6px">%
       <span class="hint">(100% = tanpa zoom)</span>
     </div>` : ""}
-    ${!isThumb ? `<p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>` : ""}
+    ${!isThumb && !isWindow ? `<p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>` : ""}
     <div id="pickwrap" class="pickarea" style="position:relative;display:inline-block;
-         cursor:${isThumb ? "default" : isZoom ? "move" : "crosshair"};user-select:none;-webkit-user-drag:none">
+         cursor:${isThumb || isWindow ? "default" : isZoom ? "move" : "crosshair"};user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
            src="${pickFrameSrc(at)}">
-      ${scrubVideo("pick", at, isLayout && !isZoom ? zoomCrop(s) : null)}
+      ${scrubVideo("pick", at, (isLayout && !isZoom) || isWindow ? zoomCrop(s) : null)}
       <div id="pickghosts"></div>
       <div id="pickexisting"></div>
       ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
@@ -1047,7 +1057,8 @@ function pickerBody(s) {
     ${scrubControls("pick", at, hi, isThumb
       ? `<button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>` : "", lo)}
     <div class="row" style="margin-top:10px">
-      ${isThumb
+      ${isWindow ? ""
+        : isThumb
         ? `<span class="hint">${s.has_thumb_source ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.` : "Belum ada frame tersimpan."}</span>
            ${s.has_thumb_source ? `<button onclick="pickAt=${s.thumb_time};draw()" style="padding:3px 10px;font-size:12px">Lompat ke sana</button>` : ""}`
         : isZoom
@@ -1059,7 +1070,7 @@ function pickerBody(s) {
         : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
-      <span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>
+      ${isWindow ? "" : `<span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>`}
     </div>
     ${isLayout && layer === "brand" ? brandUpload(s) : ""}
     ${isThumb ? thumbSteps(s) : ""}`;
@@ -1090,7 +1101,7 @@ function previewCard(s) {
 function drawGhosts() {
   const img = $("pickimg"), host = $("pickghosts");
   if (!img || !host || !state.width) return;
-  if (picking === "thumb") { host.innerHTML = ""; return; }   // the thumbnail is its own picture
+  if (picking === "thumb" || picking === "window") { host.innerHTML = ""; return; }
   const scale = img.clientWidth / state.width;
   const zoomedFrame = picking === "layout" && layer !== "zoom";
   const crop = zoomCrop(state);
@@ -1975,7 +1986,7 @@ async function clearShortLayer() {
 }
 
 function pickFrameSrc(t) {
-  const zoomed = picking === "layout" && layer !== "zoom";
+  const zoomed = (picking === "layout" && layer !== "zoom") || picking === "window";
   return `api/projects/${current}/frame?t=${t}&width=880${zoomed ? "&zoomed=1" : ""}`;
 }
 
@@ -1986,7 +1997,7 @@ function wirePicker() {
   wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; },
                                        onLabel: renderPickInfo });
   renderPickInfo(+$("pickRange").value);
-  if (picking === "thumb") return;
+  if (picking === "thumb" || picking === "window") return;
   if (picking === "board") wireQuadPicker();
   else if (layer === "zoom") wireZoomPicker();
   else wireRectPicker();

@@ -28,17 +28,24 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
 **Tiap proyek dikerjakan per langkah.** Setelah URL + PGN, UI proyek adalah stepper
 (`STEPS`, `setStep()`): **1 Deteksi** (deteksi + timeline koreksi waktu) → **2 Tata letak**
-(preview dengan tab layer video panjang + mulai/selesai) → **3 Short** (ply/jeda/ekor +
-editor layout short) → **4 Tampilan & render** (warna papan, set bidak, tambahan, lalu
-render video panjang / short) → **5 Terbitkan** (thumbnail + paket upload). Langkah
-menentukan editor yang hidup: `PICKING_FOR` memetakan 2→`layout`, 3→`short`, 5→`thumb`,
-dan `draw()` menegakkannya tiap render. Proyek dibuka di langkah yang masuk akal
-(`defaultStep()`: belum deteksi → 1, belum ada hasil render → 2, selainnya → 5); langkah
+(preview dengan tab layer video panjang) → **3 Short** (ply/jeda/ekor + editor layout short)
+→ **4 Mulai & selesai** (preview frame hasil zoom + kotak Mulai −/Selesai + dan tombol "Pakai"
+untuk mulai/stop di detik yang tampil) → **5 Tampilan & render** (warna papan, set bidak,
+tambahan, lalu render video panjang / short) → **6 Terbitkan** (thumbnail + paket upload).
+Langkah menentukan editor yang hidup: `PICKING_FOR` memetakan 2→`layout`, 3→`short`,
+4→`window`, 6→`thumb`, dan `draw()` menegakkannya tiap render. Proyek dibuka di langkah yang masuk akal
+(`defaultStep()`: belum deteksi → 1, belum ada hasil render → 2, selainnya → 6); langkah
 yang prasyaratnya belum ada dinonaktifkan (`stepReady()`), yang sudah beres diberi ✓
 (`stepDone()`). Header proyek tanpa kartu dengan pill status berwarna; "Hapus proyek" di
 pojok kanan; log dilipat (`<details>`, terbuka saat busy/gagal). Di HP daftar proyek jadi
 laci (tombol "Proyek (n)", `toggleDrawer()`). Satu tampilan gelap yang disengaja; huruf
 Figtree (UI) + JetBrains Mono (angka/log).
+
+**Mulai & selesai butuh deteksi.** Keduanya relatif terhadap langkah pertama/terakhir, jadi
+sebelum ada timestamp preview tidak bisa dipotong — langkah 3–5 terkunci sampai deteksi
+selesai. (Pernah membingungkan: di proyek yang belum dideteksi nilainya bisa disimpan tetapi
+preview tetap sepanjang siaran.) `window_set` di status menandai proyek yang pernah
+menyimpan mulai/selesai (✓ di langkah 4).
 
 **"Ikuti papan fisik" dan tab "Papan fisik" dihapus dari UI** (permintaan pengguna,
 2026-09-22). Endpoint `/retime` dan `/board-quad`, `core/physical.py`, dan kode picker quad

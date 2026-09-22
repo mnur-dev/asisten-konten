@@ -391,6 +391,7 @@ def status(project_id: str):
     meta.setdefault("short_music_offset", 0.0)
     plies, pad, tail = short_cut_of(meta)
     meta["short_plies"], meta["short_pad"], meta["short_tail"] = plies, pad, tail
+    meta["window_set"] = "lead_in" in meta or "outro" in meta   # before the defaults fill them in
     meta["lead_in"] = lead_in_of(meta)
     meta["outro"] = outro_of(meta)
     meta.setdefault("thumb_time", None)
