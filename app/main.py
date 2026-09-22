@@ -1478,7 +1478,8 @@ def set_thumb_text(project_id: str, text: str = Body("", embed=True)):
     text = text.strip().strip('"')
     fields = {"thumb_text": text or None}
     if stored := (meta.get("thumb_prompt") or "").strip():
-        fields["thumb_prompt"] = re.sub(r'(tambahkan text\s*")[^"]*(")',
+        # straight or curly quotes: prompts typed on a phone come with “ ”
+        fields["thumb_prompt"] = re.sub(r'(tambahkan text\s*["“])[^"”]*(["”])',
                                         lambda m: m.group(1) + (text or thumbnail.TEXT_PLACEHOLDER) + m.group(2),
                                         stored, count=1)
     meta = update(path, **fields)
