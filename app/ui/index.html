@@ -74,7 +74,7 @@
   .err { color: var(--bad); }
   .hint { color: var(--muted); font-size: 12px; }
   .scrub-row { max-width: 880px; }
-  #pickwrap, #pickwrap img { -webkit-touch-callout: none; -webkit-user-select: none; }
+  .pickarea, .pickarea img { -webkit-touch-callout: none; -webkit-user-select: none; }
   .touch-only { display: none; }
   @media (hover: none) and (pointer: coarse) { .touch-only { display: block; } }
   /* Phones: the two fixed-height scroll panes become one normal page, the
@@ -221,7 +221,7 @@ async function create() {
 
 async function open_(id) {
   if (dirty && !confirm("Ada perubahan waktu yang belum disimpan. Tinggalkan?")) return;
-  current = id; selected = null; dirty = false; picking = false; pick = null;
+  current = id; selected = null; dirty = false; picking = false; pick = null; pickAt = null;
   segStart = null; clearInterval(rafId);
   clearInterval(spRafId); spWindowsKey = null; spLoopActive = false;
   spTime = null; spPlaying = false; spWindows = []; spFramePlies = null; spScrubbing = false;
@@ -264,11 +264,9 @@ function draw() {
                   onclick="run('retry-download')">Coba unduh lagi</button>` : ""}
           <button ${busy ? "disabled" : ""} onclick="run('detect')">
             ${s.waypoints ? "Deteksi ulang" : "Deteksi"}</button>
-          <button ${busy ? "disabled" : ""} onclick="togglePicker()">
-            ${s.board_quad ? "Ubah papan fisik" : "Pilih papan fisik"}</button>
-          <button ${busy ? "disabled" : ""} onclick="toggleLayout()"
-                  title="Posisi papan render, hapus logo, blur, logo sendiri, nama pemain">
-            Tata letak</button>
+          <button ${busy ? "disabled" : ""} onclick="togglePreview()"
+                  title="Satu preview untuk semua pengaturan: zoom, papan render, logo, blur, nama, papan fisik, thumbnail, short">
+            ${picking ? "Tutup preview" : "Preview & atur"}</button>
           <button ${busy || !s.waypoints || !s.board_quad ? "disabled" : ""}
                   onclick="run('retime')" title="Geser waktu tiap ply mengikuti papan kayu">
             Ikuti papan fisik</button>
@@ -306,12 +304,6 @@ function draw() {
                     ? "Render short.mp4 saja, pakai board.mp4 dari render sebelumnya (video panjang tidak disentuh)"
                     : "Render short.mp4 saja -- board.mp4 dibuat dulu karena belum ada, jadi kali ini lebih lama"}">
             Render short</button>
-          <button ${busy || !s.waypoints ? "disabled" : ""} onclick="toggleShort()"
-                  title="Atur posisi papan & teks, dengan pratinjau live di sebelahnya">
-            Layout & preview short${s.has_short_layout ? " ✓" : ""}</button>
-          <button ${busy ? "disabled" : ""} onclick="toggleThumb()"
-                  title="Buat thumbnail YouTube dari satu frame video: gambar dibersihkan AI, judul digambar sendiri">
-            Thumbnail${s.has_thumbnail ? " ✓" : ""}</button>
           <button ${busy ? "disabled" : ""} title="Hapus proyek ini"
                   onclick="deleteProject('${current}','${escape_(s.name).replace(/'/g, "\\'")}')">Hapus</button>
         </div>
@@ -335,18 +327,16 @@ function draw() {
           style="color:var(--accent)">${f}</a>`).join(" · ") + `</div>` : ""}
     </div>
     ${s.themes ? lookCard(s) : ""}
-    ${picking === "short" ? shortEditorCard(s)
-      : picking === "thumb" ? thumbEditorCard(s) : picking ? pickerCard(s) : ""}
+    ${picking ? previewCard(s) : ""}
     ${s.log ? `<div class="card"><div class="hint" style="margin-bottom:7px">Log</div>
        <pre id="log">${escape_(s.log)}</pre></div>` : ""}
     ${s.waypoints ? waypointsCard(s) : ""}`;
   if (s.waypoints) updateShortEstimate();
   if (picking === "short") { wireShortPicker(); wireShortPreview(); }
-  else if (picking === "thumb") {
-    wireScrubber("thumb", $("thumbFrame"), { frameSrc: thumbFrameSrc, onTime: (t) => { thumbAt = t; } });
-    wireThumbPicker(); refreshThumbPromptButton();
+  else if (picking) {
+    wirePicker();
+    if (picking === "thumb") { wireThumbPicker(); refreshThumbPromptButton(); }
   }
-  else if (picking) wirePicker();
   const log = $("log"); if (log) log.scrollTop = log.scrollHeight;
   if (segStart !== null && s.waypoints) showSegment(segStart);
 }
@@ -551,21 +541,32 @@ function post(endpoint, body) {
   });
 }
 
-function togglePicker() { picking = picking === "board" ? false : "board"; pickAt = null; draw(); }
-function toggleLayout() { picking = picking === "layout" ? false : "layout"; pickAt = null; draw(); }
-function setLayer(name) { layer = name; pick = null; draw(); }
-async function toggleShort() {
-  const closing = picking === "short";
-  picking = closing ? false : "short";
-  pick = null;
-  if (closing) {
-    clearInterval(spRafId);
-    spLoopActive = false; spPlaying = false; spTime = null; spWindowsKey = null;
-    spWindows = []; spFramePlies = null; spScrubbing = false; spTextKey = null;
-    if (spAudioEl) spAudioEl.pause();
-  } else if (!musicList.length) {
+let previewTab = "paste";      // a LAYERS key, "board", "thumb" or "short"
+
+function togglePreview() { if (picking) closePreview(); else setPreviewTab(previewTab); }
+function closePreview() { leaveShort(); picking = false; pick = null; draw(); }
+// kept for the handful of callers that open a specific tab
+function setLayer(name) { setPreviewTab(name); }
+function toggleShort() { if (picking === "short") closePreview(); else setPreviewTab("short"); }
+function toggleThumb() { if (picking === "thumb") closePreview(); else setPreviewTab("thumb"); }
+
+function leaveShort() {
+  if (picking !== "short") return;
+  clearInterval(spRafId);
+  spLoopActive = false; spPlaying = false; spTime = null; spWindowsKey = null;
+  spWindows = []; spFramePlies = null; spScrubbing = false; spTextKey = null;
+  if (spAudioEl) spAudioEl.pause();
+}
+
+async function setPreviewTab(tab) {
+  if (tab !== "short") leaveShort();
+  if (tab === "short" && !musicList.length) {
     try { musicList = (await api("api/sounds")).music; } catch (e) {}
   }
+  if (tab === "thumb" && picking !== "thumb") await initThumb();
+  if (LAYERS[tab]) layer = tab;
+  picking = tab === "board" || tab === "thumb" || tab === "short" ? tab : "layout";
+  previewTab = tab; pick = null;
   draw();
 }
 function setShortLayer(name) { shortLayer = name; pick = null; draw(); }
@@ -618,7 +619,7 @@ function outputWindow(s) {
 let pickInfoHtml = "";
 function renderPickInfo(t) {
   const host = $("pickInfo");
-  if (!host) return;
+  if (!host || picking === "thumb") return;
   const w = outputWindow(state);
   let html = "";
   if (w) {
@@ -642,7 +643,7 @@ function renderPickInfo(t) {
 // Re-fit the preview's slider to the output window after mulai/selesai change.
 function refitPickWindow() {
   const range = $("pickRange");
-  if (!range || !state) return;
+  if (!range || !state || picking === "thumb") return;
   const w = outputWindow(state);
   const lo = w ? w.lo : 0, hi = w ? w.hi : (state.duration || 60);
   range.min = lo; range.max = hi;
@@ -728,36 +729,34 @@ function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
   };
 }
 
-function pickerCard(s) {
-  const isLayout = picking === "layout";
+// The one preview everything is set on: a broadcast frame + scrubber shared by the
+// long-video layers, the physical-board corners and the thumbnail's source frame.
+// The time is shared too (pickAt), so switching tabs keeps you on the same moment.
+// The short is the exception -- its 9:16 canvas is a different picture -- so its
+// tab swaps in its own editor inside the same card.
+function pickerBody(s) {
+  const isLayout = picking === "layout", isThumb = picking === "thumb";
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
-  const win = outputWindow(s);
+  const win = isThumb ? null : outputWindow(s);
   const lo = win ? win.lo : 0, hi = win ? win.hi : duration;
-  const at = Math.min(Math.max(pickAt ?? Math.round(lo + (hi - lo) * 0.55), lo), hi);
+  const fallback = isThumb && s.thumb_time != null ? s.thumb_time : Math.round(lo + (hi - lo) * 0.55);
+  const at = Math.min(Math.max(pickAt ?? fallback, lo), hi);
   const spec = LAYERS[layer];
   const count = isLayout && !spec.special ? spec.get(s).length : 0;
-  const fixedSize = spec.pairSize && !count ? spec.pairSize(s) : null;
-  const tabs = Object.entries(LAYERS).map(([name, l]) => `
-    <button onclick="setLayer('${name}')" style="padding:4px 10px;font-size:12px;${name === layer
-      ? `border-color:${l.colour};color:${l.colour}` : ""}">${l.label}${
-      l.special ? (s.source_zoom ? ` (${s.source_zoom.percent}%)` : "")
-                : (l.get(s).length ? ` (${l.get(s).length})` : "")}</button>`).join("");
-  return `<div class="card">
-    <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">${isLayout ? "Tata letak video" : "Area papan fisik"}</b>
-      <span class="hint">${isZoom ? (s.source_zoom ? `${s.source_zoom.percent}%` : "tanpa zoom")
-        : isLayout ? `${count} kotak`
-        : (s.board_quad ? "4 sudut tersimpan" : "belum dipilih")}</span>
-    </div>
-    ${isLayout ? `<div class="row" style="margin-bottom:9px">${tabs}</div>` : ""}
-    <p class="hint" style="margin:0 0 9px">${isLayout ? spec.hint
-      : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital."}
+  const fixedSize = isLayout && spec.pairSize && !count ? spec.pairSize(s) : null;
+  const hint = isThumb
+    ? "<b>1. Pilih frame.</b> Geser ke momen yang ekspresinya paling kuat, lalu \"Pakai frame ini\" — itu yang dikirim ke AI. Frame thumbnail diambil dari siaran utuh (tanpa zoom)."
+    : isLayout ? spec.hint
+    : "Klik 4 sudut papan kayu searah jarum jam: kiri-atas, kanan-atas, kanan-bawah, kiri-bawah. Setelah 4 titik, tarik titiknya biar pas mengikuti sudut miring kamera. Jangan ikutkan pemain, jam, atau papan digital.";
+  return `
+    <p class="hint" style="margin:0 0 9px">${hint}
       ${fixedSize ? ` Ukuran kotak (${fixedSize[0]}×${fixedSize[1]} px) mengikuti kotak nama satunya —
       klik lalu geser untuk menempatkan, tidak perlu digambar ulang.` : ""}
       ${isLayout && !isZoom && s.source_zoom ? ` Pratinjau di bawah sudah mengikuti zoom
       ${s.source_zoom.percent}% yang diatur di tab Zoom — kotak yang kamu buat di sini otomatis
-      dalam skala yang sama.` : ""}</p>
+      dalam skala yang sama.` : ""}
+      ${!isThumb ? " Kotak garis putus-putus = pengaturan tab lain, cuma ditampilkan." : ""}</p>
     ${isZoom ? `<div class="row" style="margin-bottom:9px;align-items:center">
       <span class="hint">Persen zoom:</span>
       <input id="zoompercent" type="number" min="100" max="500" step="5"
@@ -765,26 +764,31 @@ function pickerCard(s) {
              style="width:70px;font-size:12px;padding:3px 6px">%
       <span class="hint">(100% = tanpa zoom)</span>
     </div>` : ""}
-    <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
-    <div id="pickwrap" style="position:relative;display:inline-block;cursor:${isZoom ? "move" : "crosshair"};
-         user-select:none;-webkit-user-drag:none">
+    ${!isThumb ? `<p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>` : ""}
+    <div id="pickwrap" class="pickarea" style="position:relative;display:inline-block;
+         cursor:${isThumb ? "default" : isZoom ? "move" : "crosshair"};user-select:none;-webkit-user-drag:none">
       <img id="pickimg" draggable="false" style="display:block;border-radius:7px;max-width:100%"
            src="${pickFrameSrc(at)}">
       ${scrubVideo("pick", at, isLayout && !isZoom ? zoomCrop(s) : null)}
+      <div id="pickghosts"></div>
       <div id="pickexisting"></div>
       ${isZoom ? `<div id="zoombox" style="position:absolute;border:2px solid ${spec.colour};
            background:${spec.colour}26;pointer-events:none;cursor:move"></div>` : ""}
       ${isLayout && !isZoom ? `<div id="pickbox" style="position:absolute;border:2px solid ${spec.colour};
            background:${spec.colour}2e;display:none;pointer-events:none"></div>` : ""}
-      ${!isLayout ? `
+      ${picking === "board" ? `
       <svg id="pickpoly" style="position:absolute;left:0;top:0;pointer-events:none" width="100%" height="100%">
         <polygon id="pickpolygon" points="" fill="rgba(123,178,106,.18)" stroke="var(--accent)" stroke-width="2"></polygon>
       </svg>
       <div id="pickhandles"></div>` : ""}
     </div>
-    ${scrubControls("pick", at, hi, "", lo)}
+    ${scrubControls("pick", at, hi, isThumb
+      ? `<button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>` : "", lo)}
     <div class="row" style="margin-top:10px">
-      ${isZoom
+      ${isThumb
+        ? `<span class="hint">${s.has_thumb_source ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.` : "Belum ada frame tersimpan."}</span>
+           ${s.has_thumb_source ? `<button onclick="pickAt=${s.thumb_time};draw()" style="padding:3px 10px;font-size:12px">Lompat ke sana</button>` : ""}`
+        : isZoom
         ? `${s.source_zoom ? `<button onclick="resetZoom()">Hapus zoom</button>` : ""}`
         : isLayout
         ? `<button class="primary" id="pickok" disabled onclick="addRect()">
@@ -793,11 +797,76 @@ function pickerCard(s) {
         : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
-      <button onclick="${isLayout ? "toggleLayout" : "togglePicker"}()">Tutup</button>
       <span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>
     </div>
     ${isLayout && layer === "brand" ? brandUpload(s) : ""}
+    ${isThumb ? thumbSteps(s) : ""}`;
+}
+
+// Tabs of the single preview card. Long-video layers first (they share one frame),
+// then the physical board, the thumbnail and the short.
+function previewTabs(s) {
+  const btn = (tab, label, colour, on, disabled = false) => `<button onclick="setPreviewTab('${tab}')"
+      ${disabled ? "disabled" : ""} style="padding:4px 10px;font-size:12px;${on
+      ? `border-color:${colour};color:${colour}` : ""}">${label}</button>`;
+  const layers = Object.entries(LAYERS).map(([name, l]) => btn(name, l.label + (
+      l.special ? (s.source_zoom ? ` (${s.source_zoom.percent}%)` : "")
+                : (l.get(s).length ? ` (${l.get(s).length})` : "")),
+      l.colour, picking === "layout" && layer === name)).join("");
+  return `<div class="row" style="margin-bottom:6px;gap:6px">
+      <span class="hint">Video panjang:</span>${layers}</div>
+    <div class="row" style="margin-bottom:10px;gap:6px">
+      <span class="hint">Lainnya:</span>
+      ${btn("board", `Papan fisik${s.board_quad ? " ✓" : ""}`, "#7bb26a", picking === "board")}
+      ${btn("thumb", `Thumbnail${s.has_thumbnail ? " ✓" : ""}`, "#ff5a5f", picking === "thumb")}
+      ${btn("short", `Short${s.has_short_layout ? " ✓" : ""}`, "#e2b33b", picking === "short", !s.waypoints)}
+    </div>`;
+}
+
+function previewCard(s) {
+  return `<div class="card">
+    <div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b style="font-size:13px">Preview & pengaturan</b>
+      <button onclick="closePreview()">Tutup</button>
+    </div>
+    ${previewTabs(s)}
+    ${picking === "short" ? shortEditorCard(s) : pickerBody(s)}
   </div>`;
+}
+
+// Every other tab's boxes, dashed and inert, so one frame shows the whole setup.
+// Layer rects live in the zoomed frame's pixels (scaled to the source size); the
+// zoom, board and thumbnail tabs show the untouched frame, so there they are mapped
+// back through the zoom crop. The physical-board quad is the other way round.
+function drawGhosts() {
+  const img = $("pickimg"), host = $("pickghosts");
+  if (!img || !host || !state.width) return;
+  if (picking === "thumb") { host.innerHTML = ""; return; }   // the thumbnail is its own picture
+  const scale = img.clientWidth / state.width;
+  const zoomedFrame = picking === "layout" && layer !== "zoom";
+  const crop = zoomCrop(state);
+  const fromZoomed = (r) => !crop || zoomedFrame ? r
+    : [crop.x + r[0] * crop.w / crop.W, crop.y + r[1] * crop.h / crop.H, r[2] * crop.w / crop.W, r[3] * crop.h / crop.H];
+  const fromSource = ([x, y]) => !crop || !zoomedFrame ? [x, y]
+    : [(x - crop.x) * crop.W / crop.w, (y - crop.y) * crop.H / crop.h];
+  let html = "";
+  Object.entries(LAYERS).forEach(([name, l]) => {
+    if (l.special || (picking === "layout" && name === layer)) return;
+    l.get(state).forEach((rect) => {
+      const [x, y, w, h] = fromZoomed(rect).map((v) => v * scale);
+      html += `<div style="position:absolute;left:${x}px;top:${y}px;width:${w}px;height:${h}px;
+        border:1px dashed ${l.colour};pointer-events:none;opacity:.8">
+        <span style="position:absolute;left:0;top:0;font-size:9px;line-height:1;padding:1px 3px;
+          background:#000a;color:${l.colour};white-space:nowrap">${l.label}</span></div>`;
+    });
+  });
+  if (picking !== "board" && state.board_quad) {
+    const points = state.board_quad.map((p) => fromSource(p).map((v) => v * scale).join(",")).join(" ");
+    html += `<svg style="position:absolute;left:0;top:0;pointer-events:none;overflow:visible"
+      width="100%" height="100%"><polygon points="${points}" fill="none" stroke="#7bb26a"
+      stroke-width="1" stroke-dasharray="4 3" opacity=".8"></polygon></svg>`;
+  }
+  host.innerHTML = html;
 }
 
 function brandUpload(s) {
@@ -837,11 +906,7 @@ function shortEditorCard(s) {
     <button onclick="setShortLayer('${name}')" style="padding:4px 10px;font-size:12px;${name === shortLayer
       ? `border-color:${l.colour};color:${l.colour}` : ""}">${l.label}${
       l.get(s).length ? ` (${l.get(s).length})` : ""}</button>`).join("");
-  return `<div class="card">
-    <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">Layout & preview short</b>
-      <button onclick="toggleShort()">Tutup</button>
-    </div>
+  return `<div>
     <div class="split">
       <div>
         <div class="row" style="justify-content:space-between;margin-bottom:9px">
@@ -1630,10 +1695,13 @@ function pickFrameSrc(t) {
 
 function wirePicker() {
   pickInfoHtml = "";
+  const ghostImg = $("pickimg");
+  if (ghostImg) { ghostImg.addEventListener("load", drawGhosts); if (ghostImg.complete) drawGhosts(); }
   wireScrubber("pick", $("pickimg"), { frameSrc: pickFrameSrc, onTime: (t) => { pickAt = t; },
                                        onLabel: renderPickInfo });
   renderPickInfo(+$("pickRange").value);
-  if (picking !== "layout") wireQuadPicker();
+  if (picking === "thumb") return;
+  if (picking === "board") wireQuadPicker();
   else if (layer === "zoom") wireZoomPicker();
   else wireRectPicker();
 }
@@ -1888,7 +1956,7 @@ async function saveQuad() {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ quad }),
   });
-  picking = false; refresh();
+  refresh();
 }
 
 async function clearQuad() {
@@ -2144,7 +2212,7 @@ async function runShort() {
       "Layout short belum diatur (posisi papan / teks caption belum ada).\n\n" +
       "OK  = tetap render pakai posisi papan default\n" +
       "Batal = buka panel layout short dulu")) {
-    if (picking !== "short") toggleShort();
+    if (picking !== "short") setPreviewTab("short");
     return;
   }
   try {
@@ -2196,32 +2264,27 @@ function thumbSpent(s) {
   return { usd, calls, unknown };
 }
 
-async function toggleThumb() {
-  const closing = picking === "thumb";
-  picking = closing ? false : "thumb";
-  pick = null;
-  if (!closing) {
-    thumbAt = state.thumb_time ?? Math.round((state.duration || 0) / 2);
-    thumbQuality = state.thumb_quality || "high";
-    thumbPrompt = state.thumb_prompt || "";
-    thumbPromptDirty = false;
-    if (thumbHasKey === null) {
-      try { thumbHasKey = (await api("api/openrouter-key")).has_key; } catch (e) { thumbHasKey = false; }
-    }
-    thumbModel = state.thumb_model || thumbModel;
-    if (!thumbModels.length) await loadThumbModels(false);
+async function initThumb() {
+  if (pickAt === null && state.thumb_time != null) pickAt = state.thumb_time;
+  thumbQuality = state.thumb_quality || "high";
+  thumbPrompt = state.thumb_prompt || "";
+  thumbPromptDirty = false;
+  if (thumbHasKey === null) {
+    try { thumbHasKey = (await api("api/openrouter-key")).has_key; } catch (e) { thumbHasKey = false; }
   }
-  draw();
+  thumbModel = state.thumb_model || thumbModel;
+  if (!thumbModels.length) await loadThumbModels(false);
 }
 
 function setThumbQuality(value) { thumbQuality = value; draw(); }
 
-function thumbFrameSrc(t) { return `api/projects/${current}/frame?t=${t}&width=460`; }
+
 
 // Freeze the chosen second as the file that actually gets uploaded, so a later
 // retry sends the frame the user approved rather than re-reading the video.
 async function useThumbFrame() {
   try {
+    thumbAt = pickAt ?? thumbAt;
     await post("thumb-frame", { seconds: thumbAt });
     thumbStamp = Date.now();
     await refresh();
@@ -2341,7 +2404,7 @@ function thumbPreviewSrc(s) {
   return "";
 }
 
-function thumbEditorCard(s) {
+function thumbSteps(s) {
   const [W, H] = s.thumb_size || [1280, 720];
   const texts = s.thumb_texts || [];
   const attempts = s.thumb_attempts || [];
@@ -2349,26 +2412,9 @@ function thumbEditorCard(s) {
   const src = thumbPreviewSrc(s);
   const quality = thumbModelRecord()?.qualities;
   const canGenerate = s.has_thumb_source && thumbHasKey && thumbModels.length && !s.busy;
-  return `<div class="card">
-    <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">Thumbnail</b>
-      <button onclick="toggleThumb()">Tutup</button>
-    </div>
-    <div class="split">
+  return `
+    <div class="split" style="margin-top:16px">
       <div>
-        <p class="hint" style="margin:0 0 9px"><b>1. Pilih frame.</b> Geser ke momen yang
-          ekspresinya paling kuat — itu yang dikirim ke AI.</p>
-        <div style="position:relative;width:460px;max-width:100%">
-          <img id="thumbFrame" style="display:block;width:100%;border-radius:7px"
-               src="${thumbFrameSrc(thumbAt)}">
-          ${scrubVideo("thumb", thumbAt, null)}
-        </div>
-        ${scrubControls("thumb", thumbAt, Math.round(s.duration || 0),
-          `<button class="primary" onclick="useThumbFrame()">Pakai frame ini</button>`)}
-        <p class="hint" style="margin:7px 0 0">${s.has_thumb_source
-          ? `Frame tersimpan di ${fmtTime(s.thumb_time)}.`
-          : "Belum ada frame tersimpan."}</p>
-
         <p class="hint" style="margin:14px 0 6px"><b>2. Prompt.</b> Nama pemain sudah diisi
           dari PGN. Teks judul sengaja TIDAK diminta ke AI — digambar sendiri di kanan,
           supaya ganti kata tidak perlu bayar lagi.</p>
@@ -2431,18 +2477,18 @@ function thumbEditorCard(s) {
           <button class="primary" onclick="addThumbText()">Tambah</button>
         </div>
         <p class="hint touch-only" style="margin:0 0 6px">Sentuh gambar dan tahan sebentar sampai bergetar, lalu geser jari untuk menggambar/memindah kotak. Ketuk biasa = klik.</p>
-        <div id="pickwrap" style="position:relative;display:inline-block;width:460px;max-width:100%;
+        <div id="thumbwrap" class="pickarea" style="position:relative;display:inline-block;width:460px;max-width:100%;
              cursor:crosshair;user-select:none;background:#000;border-radius:7px">
-          ${src ? `<img id="pickimg" draggable="false" src="${src}"
+          ${src ? `<img id="thumbimg" draggable="false" src="${src}"
              style="display:block;width:100%;border-radius:7px">`
             : `<div style="aspect-ratio:${W}/${H};display:flex;align-items:center;
                  justify-content:center;color:#888;font-size:12px">Pilih frame dulu</div>`}
-          <div id="pickexisting"></div>
-          <div id="pickbox" style="position:absolute;border:2px solid #ff1417;
+          <div id="thumbexisting"></div>
+          <div id="thumbbox" style="position:absolute;border:2px solid #ff1417;
                background:#ff141733;display:none;pointer-events:none"></div>
         </div>
         <div class="row" style="margin-top:8px">
-          <span id="pickmsg" class="hint"></span>
+          <span id="thumbmsg" class="hint"></span>
         </div>
         ${texts.length ? `<div class="row" style="margin-top:4px;flex-wrap:wrap">
           ${texts.map((t, i) => `<span class="hint" style="border:1px solid #444;border-radius:12px;
@@ -2472,7 +2518,7 @@ function thumbEditorCard(s) {
           <span class="hint">${W}×${H}, siap diunggah</span>
         </div>` : ""}
       </div>
-    </div>
+    
   </div>`;
 }
 
@@ -2480,7 +2526,7 @@ function thumbEditorCard(s) {
 // preview is 16:9 whether it is showing the 1920x1080 source frame or the
 // 1280x720 result, so one scale factor is correct for both.
 function wireThumbPicker() {
-  const wrap = $("pickwrap"), box = $("pickbox"), img = $("pickimg");
+  const wrap = $("thumbwrap"), box = $("thumbbox"), img = $("thumbimg");
   if (!wrap || !img) return;
   const [W] = state.thumb_size || [1280, 720];
   let start = null;
@@ -2507,13 +2553,13 @@ function wireThumbPicker() {
     start = null;
     if (rect[2] < 12 || rect[3] < 12) { box.style.display = "none"; return; }
     pick = rect.map((v) => Math.round(v * scale));
-    $("pickmsg").textContent = `${pick[2]}×${pick[3]} px — isi teksnya lalu Tambah`;
+    $("thumbmsg").textContent = `${pick[2]}×${pick[3]} px — isi teksnya lalu Tambah`;
   };
   if (img.complete) drawExistingThumb(); else img.onload = drawExistingThumb;
 }
 
 function drawExistingThumb() {
-  const img = $("pickimg"), host = $("pickexisting");
+  const img = $("thumbimg"), host = $("thumbexisting");
   if (!img || !host) return;
   const [W, H] = state.thumb_size || [1280, 720];
   const px = img.clientWidth / W;
@@ -2529,7 +2575,7 @@ function drawExistingThumb() {
   });
 }
 
-// Touch -> mouse bridge for every box picker (all of them live in #pickwrap and
+// Touch -> mouse bridge for every box picker (all of them are .pickarea and
 // were written against mouse events). A finger that moves straight away is a page
 // scroll and is left alone; holding still for HOLD_MS starts a drag, which is
 // replayed as mousedown/mousemove/mouseup at the finger -- the same sequence a
@@ -2546,7 +2592,7 @@ function drawExistingThumb() {
   const reset = () => { clearTimeout(timer); origin = null; dragging = false; };
   document.addEventListener("touchstart", (e) => {
     const el = e.target.closest && e.target;
-    if (!el || !el.closest("#pickwrap") || el.closest("button, input") || e.touches.length > 1) {
+    if (!el || !el.closest(".pickarea") || el.closest("button, input") || e.touches.length > 1) {
       reset(); return;
     }
     origin = el; start = e.touches[0]; dragging = false;
@@ -2580,7 +2626,7 @@ function drawExistingThumb() {
   document.addEventListener("touchcancel", end);
   // Long-press on an image would otherwise open the save/share menu.
   document.addEventListener("contextmenu", (e) => {
-    if (e.target.closest && e.target.closest("#pickwrap")) e.preventDefault();
+    if (e.target.closest && e.target.closest(".pickarea")) e.preventDefault();
   });
 })();
 

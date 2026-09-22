@@ -26,6 +26,17 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    filter `perspective` ffmpeg sebelum dianalisis di `core/physical.py`.
 4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
+**Satu preview untuk semua pengaturan.** Tombol "Preview & atur" membuka satu kartu
+(`previewCard()`) dengan tab: Zoom · Papan render · Hapus logo · Blur · Logo saya · Nama
+putih · Nama hitam · Papan fisik · Thumbnail · Short. Tab video panjang, papan fisik, dan
+frame thumbnail memakai **satu** gambar + scrubber (`pickerBody()`, id `pick*`) dengan
+waktu bersama (`pickAt`), jadi pindah tab tetap di detik yang sama. Kotak layer lain
+digambar putus-putus (`drawGhosts()`, dipetakan lewat crop zoom kalau frame yang tampil
+tidak di-zoom). Pengecualian: editor judul thumbnail menggambar di atas hasil AI (id
+`thumb*`), dan tab Short menukar isinya dengan editor 9:16 miliknya sendiri, karena
+keduanya memang gambar yang berbeda. `setPreviewTab()` yang mengatur `picking`/`layer`;
+`toggleShort()`/`toggleThumb()`/`setLayer()` tinggal pembungkusnya.
+
 6. **Tata letak** (opsional) — semua penempatan di `full-video.mp4` ditandai manual
    dengan menarik kotak di atas satu frame contoh. Panel "Tata letak" di UI punya
    beberapa layer, semuanya memakai picker yang sama:
