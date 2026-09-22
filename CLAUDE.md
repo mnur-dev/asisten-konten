@@ -26,14 +26,23 @@ ulang. Perubahan `app/ui/index.html` cukup hard refresh browser (Ctrl+Shift+R).
    filter `perspective` ffmpeg sebelum dianalisis di `core/physical.py`.
 4. **Ikuti papan fisik** — geser waktu tiap ply dari overlay ke papan kayu
 5. **Review** — putar rentang 10 detik, papan kanan melangkah ikut waktu video, koreksi manual
-**Tata letak UI.** Header proyek tanpa kartu (nama, pemain, ply, durasi, pill status
-berwarna: hijau selesai, biru berdenyut sedang jalan, merah gagal) lalu `.flow`: lima
-kelompok sesuai urutan kerja — Deteksi, Atur, Video panjang, Short, Terbitkan — dengan
-file hasil di kelompoknya. "Hapus proyek" di pojok kanan bergaya bahaya samar. Log
-dilipat (`<details>`), terbuka otomatis saat busy/gagal. Di HP daftar proyek jadi laci
-(tombol "Proyek (n)" di appbar, `toggleDrawer()`), tertutup lagi saat proyek dibuka.
-Satu tampilan gelap yang disengaja (tidak ada tema terang); token warna di `:root`,
-huruf Figtree (UI) + JetBrains Mono (angka/log) dengan cadangan font sistem.
+**Tiap proyek dikerjakan per langkah.** Setelah URL + PGN, UI proyek adalah stepper
+(`STEPS`, `setStep()`): **1 Deteksi** (deteksi + timeline koreksi waktu) → **2 Tata letak**
+(preview dengan tab layer video panjang + mulai/selesai) → **3 Short** (ply/jeda/ekor +
+editor layout short) → **4 Tampilan & render** (warna papan, set bidak, tambahan, lalu
+render video panjang / short) → **5 Terbitkan** (thumbnail + paket upload). Langkah
+menentukan editor yang hidup: `PICKING_FOR` memetakan 2→`layout`, 3→`short`, 5→`thumb`,
+dan `draw()` menegakkannya tiap render. Proyek dibuka di langkah yang masuk akal
+(`defaultStep()`: belum deteksi → 1, belum ada hasil render → 2, selainnya → 5); langkah
+yang prasyaratnya belum ada dinonaktifkan (`stepReady()`), yang sudah beres diberi ✓
+(`stepDone()`). Header proyek tanpa kartu dengan pill status berwarna; "Hapus proyek" di
+pojok kanan; log dilipat (`<details>`, terbuka saat busy/gagal). Di HP daftar proyek jadi
+laci (tombol "Proyek (n)", `toggleDrawer()`). Satu tampilan gelap yang disengaja; huruf
+Figtree (UI) + JetBrains Mono (angka/log).
+
+**"Ikuti papan fisik" dan tab "Papan fisik" dihapus dari UI** (permintaan pengguna,
+2026-09-22). Endpoint `/retime` dan `/board-quad`, `core/physical.py`, dan kode picker quad
+masih ada tapi tidak bisa dijangkau dari UI.
 
 **Satu preview untuk semua pengaturan.** Tombol "Preview & atur" membuka satu kartu
 (`previewCard()`) dengan tab: Zoom · Papan render · Hapus logo · Blur · Logo saya · Nama

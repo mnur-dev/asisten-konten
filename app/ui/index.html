@@ -114,6 +114,22 @@
            padding: 3px 8px; border: 1px solid #86b86b33; border-radius: 5px; background: var(--accent-soft); }
   a.file:hover { border-color: #86b86b88; }
   a.file.quiet { color: var(--muted); border-color: var(--line); background: transparent; }
+  .stepper { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; margin-bottom: 16px; }
+  .stepper button { display: flex; align-items: center; gap: 9px; padding: 9px 11px; text-align: left;
+                    background: var(--panel); min-width: 0; }
+  .stepper .n { flex: none; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center;
+                border: 1px solid var(--line-strong); font: 500 12px var(--mono); color: var(--muted); }
+  .stepper .lbl { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .stepper button.done .n { color: var(--accent); border-color: #86b86b66; }
+  .stepper button.on { border-color: var(--accent); background: var(--accent-soft); }
+  .stepper button.on .n { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+  .step-head { margin-bottom: 12px; }
+  .step-head h3 { margin: 0; font-size: 16px; font-weight: 700; }
+  .step-head p { margin: 3px 0 0; color: var(--muted); font-size: 13px; max-width: 68ch; }
+  .step-foot { display: flex; justify-content: space-between; gap: 10px; margin: 4px 0 18px; }
+  .render-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+  .render-item { border: 1px solid var(--line); border-radius: 7px; padding: 12px; display: flex;
+                 flex-direction: column; gap: 9px; background: var(--panel-2); }
   details.log { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
                 margin-bottom: 15px; }
   details.log summary { cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 12px;
@@ -179,6 +195,10 @@
     section { overflow: visible; padding: 16px 16px 40px; }
     .proj-head h2 { font-size: 18px; }
     .flow { grid-template-columns: 1fr; }
+    .stepper { gap: 4px; }
+    .stepper button { flex-direction: column; align-items: center; text-align: center; gap: 4px;
+                      padding: 8px 2px; min-height: 0; }
+    .stepper .lbl { font-size: 10.5px; white-space: normal; line-height: 1.2; }
     .card { padding: 12px; }
     .split { grid-template-columns: 1fr; }
     .split > * { min-width: 0; }  /* grid items default to min-content width */
@@ -321,7 +341,7 @@ async function open_(id) {
   segStart = null; clearInterval(rafId);
   clearInterval(spRafId); spWindowsKey = null; spLoopActive = false;
   spTime = null; spPlaying = false; spWindows = []; spFramePlies = null; spScrubbing = false;
-  spTextKey = null; shortOptsFor = null;
+  spTextKey = null; shortOptsFor = null; stepFor = null;
   clearInterval(timer); await refresh(); loadList();
   timer = setInterval(() => { if (state?.busy) refresh(); }, 1500);
 }
@@ -333,6 +353,171 @@ async function refresh() {
 }
 
 let logOpen = false;
+
+// ------------------------------------------------------------------ project steps
+// A project is worked through in order: detect, lay out the long video, cut the
+// short, pick the board look and render, then publish. Each step shows only its
+// own controls; the nav stays free to jump around once a step's inputs exist.
+const STEPS = [
+  { n: 1, label: "Deteksi" },
+  { n: 2, label: "Tata letak" },
+  { n: 3, label: "Short" },
+  { n: 4, label: "Tampilan & render" },
+  { n: 5, label: "Terbitkan" },
+];
+const PICKING_FOR = { 2: "layout", 3: "short", 5: "thumb" };
+let step = 1, stepFor = null;
+
+function defaultStep(s) {
+  if (!s.waypoints) return 1;
+  const outs = s.outputs || [];
+  if (!outs.includes("full-video.mp4") && !outs.includes("short.mp4")) return 2;
+  return 5;
+}
+function stepReady(n, s) {
+  if (n === 1) return true;
+  if (n === 3 || n === 4) return !!s.waypoints;
+  return !!s.width;
+}
+function stepDone(n, s) {
+  const outs = s.outputs || [];
+  return n === 1 ? !!s.waypoints
+    : n === 2 ? !!(s.paste_rect || (s.logo_rects || []).length || (s.blur_rects || []).length
+                   || s.brand_rect || s.name_rects?.white || s.name_rects?.black || s.source_zoom)
+    : n === 3 ? !!s.has_short_layout
+    : n === 4 ? outs.includes("full-video.mp4") || outs.includes("short.mp4")
+    : !!s.has_thumbnail;
+}
+
+// Loads what a step's editor needs the first time it is shown, then redraws.
+async function prepareStep(n) {
+  if (n === 3 && !musicList.length) {
+    try { musicList = (await api("api/sounds")).music; } catch (e) {}
+  }
+  if (n === 5) {
+    await initThumb();
+    if (!uploadTemplates) {
+      try { uploadTemplates = (await api("api/upload-templates")).channels; } catch (e) {}
+    }
+  }
+  if (n === 3 || n === 5) draw();
+}
+
+async function setStep(n) {
+  if (!state || !stepReady(n, state)) return;
+  if (step === 3 && n !== 3) leaveShort();
+  step = n; pick = null;
+  picking = PICKING_FOR[n] || false;
+  draw();
+  prepareStep(n);
+  $("stepNav")?.scrollIntoView({ block: "nearest" });
+}
+
+function stepNav(s) {
+  return `<nav id="stepNav" class="stepper" aria-label="Langkah proyek">${STEPS.map(({ n, label }) => {
+    const done = stepDone(n, s), on = n === step;
+    return `<button class="${on ? "on" : ""} ${done ? "done" : ""}" ${stepReady(n, s) ? "" : "disabled"}
+        onclick="setStep(${n})" ${on ? 'aria-current="step"' : ""}>
+      <span class="n">${done && !on ? "✓" : n}</span><span class="lbl">${label}</span></button>`;
+  }).join("")}</nav>`;
+}
+
+function stepFoot(n) {
+  const prev = STEPS[n - 2], next = STEPS[n];
+  return `<div class="step-foot">
+    ${prev ? `<button class="ghost" onclick="setStep(${prev.n})">← ${prev.label}</button>` : "<span></span>"}
+    ${next ? `<button ${stepReady(next.n, state) ? "" : "disabled"} onclick="setStep(${next.n})">Lanjut: ${next.label} →</button>` : ""}
+  </div>`;
+}
+
+function stepHead(title, text) {
+  return `<div class="step-head"><h3>${title}</h3>${text ? `<p>${text}</p>` : ""}</div>`;
+}
+
+function stepBody(s) {
+  const busy = s.busy, outputs = s.outputs || [];
+  const done = (s.waypoints || []).filter((w) => w.timestamp !== null);
+  const observed = done.filter((w) => w.observed).length;
+  const hasBoard = outputs.includes("board.mp4");
+  const cutDirty = shortOptsDirty(s);
+  const fileLink = (f, quiet) => outputs.includes(f)
+    ? `<a class="file${quiet ? " quiet" : ""}" href="api/projects/${current}/file/${f}" target="_blank">${f} ↗</a>` : "";
+  if (step === 1) return `
+    <div class="card">
+      ${stepHead("Deteksi", "Aplikasi membaca papan digital di video dan mencocokkannya dengan PGN, jadi tiap langkah dapat waktunya sendiri.")}
+      <div class="row">
+        ${s.status === "failed" && !s.width ? `<button class="primary" ${busy ? "disabled" : ""}
+                onclick="run('retry-download')">Coba unduh lagi</button>` : ""}
+        <button ${busy || !s.width ? "disabled" : ""} onclick="run('detect')"
+                ${!s.waypoints && s.width ? 'class="primary"' : ""}>
+          ${s.waypoints ? "Deteksi ulang" : "Mulai deteksi"}</button>
+        <span class="hint">${!s.width ? "Menunggu video selesai diunduh…"
+          : s.waypoints ? `<span class="num">${done.length}/${s.plies_total}</span> ply berwaktu ·
+            <span class="num">${observed}</span> terbaca langsung` : "Sekitar 1–3 menit."}</span>
+      </div>
+    </div>
+    ${s.waypoints ? waypointsCard(s) : ""}
+    ${stepFoot(1)}`;
+  if (step === 2) return `${previewCard(s)}${stepFoot(2)}`;
+  if (step === 3) return `
+    <div class="card">
+      ${stepHead("Short", "Berapa ply terakhir yang dipakai dan seberapa rapat potongannya, lalu atur posisi papan dan teks caption.")}
+      <div class="row" style="margin-bottom:14px">
+        <label class="field" for="shortPlies">ply
+          <input id="shortPlies" type="number" min="1" value="${shortOpts.plies}"
+                 title="Jumlah ply terakhir yang dipakai" oninput="setShortOpt('plies', this.value)"></label>
+        <label class="field" for="shortPad">jeda
+          <input id="shortPad" type="number" min="0.1" step="0.1" value="${shortOpts.pad}"
+                 title="Detik disisakan sebelum & sesudah tiap ply -- makin kecil, makin pendek shortnya"
+                 oninput="setShortOpt('pad', this.value)"></label>
+        <label class="field" for="shortTail">ekor
+          <input id="shortTail" type="number" min="0" step="0.5" value="${shortOpts.tail}"
+                 title="Detik tambahan setelah ply terakhir -- posisi akhir ditahan selama ini"
+                 oninput="setShortOpt('tail', this.value)"></label>
+        <span id="shortEstimate" class="hint num"></span>
+        <button id="shortSave" ${busy || !cutDirty ? "disabled" : ""}
+                ${cutDirty ? 'class="primary"' : ""} onclick="saveShortOpts()"
+                title="Simpan ply/jeda/ekor ke proyek ini">
+          ${cutDirty ? "Simpan durasi" : "Tersimpan"}</button>
+      </div>
+      ${shortEditorCard(s)}
+    </div>
+    ${stepFoot(3)}`;
+  if (step === 4) return `
+    ${s.themes ? lookCard(s) : ""}
+    <div class="card">
+      ${stepHead("Render", "Pakai tampilan papan di atas. Video panjang dan short dirender terpisah — short memakai ulang board.mp4, jadi cepat.")}
+      <div class="render-grid">
+        <div class="render-item">
+          <b>Video panjang</b>
+          <div class="row">
+            <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runRender()"
+                    title="Render board.mp4 + full-video.mp4">Render video panjang</button>
+          </div>
+          <div class="row">${fileLink("full-video.mp4")}${fileLink("board.mp4", true)}</div>
+        </div>
+        <div class="render-item">
+          <b>Short</b>
+          <div class="row">
+            <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runShort()"
+                    title="${hasBoard ? "Pakai board.mp4 dari render sebelumnya"
+                      : "board.mp4 dibuat dulu karena belum ada, jadi kali ini lebih lama"}">Render short</button>
+            <span class="hint"><span class="num">${shortOpts.plies}</span> ply terakhir</span>
+          </div>
+          <div class="row">${fileLink("short.mp4")}</div>
+        </div>
+      </div>
+    </div>
+    ${stepFoot(4)}`;
+  return `
+    <div class="card">
+      ${stepHead("Thumbnail", "")}
+      ${pickerBody(s)}
+    </div>
+    ${uploadFiles(s).length && uploadTemplates ? uploadCard(s)
+      : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 4.")}</div>`}
+    ${stepFoot(5)}`;
+}
 const STATUS_TEXT = { new: "baru", downloading: "mengunduh", ready: "siap", detecting: "mendeteksi",
   retiming: "menyesuaikan waktu", evaluating: "mengevaluasi", rendering: "merender",
   thumbnail: "membuat thumbnail", done: "selesai", failed: "gagal" };
@@ -360,6 +545,8 @@ function draw() {
     thumbAt = s.thumb_time ?? 0;
     thumbPrompt = s.thumb_prompt || ""; thumbPromptDirty = false;
   }
+  if (stepFor !== current) { stepFor = current; step = defaultStep(s); prepareStep(step); }
+  picking = PICKING_FOR[step] || false;
   const cutDirty = shortOptsDirty(s);
   const outputs = s.outputs || [];
   const fileLink = (f, quiet) => outputs.includes(f)
@@ -387,86 +574,11 @@ function draw() {
       <p class="hint" style="margin:5px 0 0">Mengunduh video: <span class="num">${dl.percent}%</span>${
         dl.eta && dl.eta !== "Unknown" ? ` · sisa <span class="num">${dl.eta}</span>` : ""}</p></div>` : ""}
 
-    <div class="flow">
-      <div class="step">
-        <span class="step-label"><i>1</i>Deteksi</span>
-        <div class="row">
-          ${s.status === "failed" && !s.width ? `<button class="primary" ${busy ? "disabled" : ""}
-                  onclick="run('retry-download')">Coba unduh lagi</button>` : ""}
-          <button ${busy ? "disabled" : ""} onclick="run('detect')"
-                  ${!s.waypoints && s.width ? 'class="primary"' : ""}>
-            ${s.waypoints ? "Deteksi ulang" : "Deteksi"}</button>
-          <button ${busy || !s.waypoints || !s.board_quad ? "disabled" : ""}
-                  onclick="run('retime')" title="Geser waktu tiap ply mengikuti papan kayu">
-            Ikuti papan fisik</button>
-        </div>
-        <p class="step-note">${s.waypoints ? `${observed} ply terbaca langsung`
-          : "Cocokkan papan di video dengan PGN"}${s.waypoints && !s.board_quad ? " · pilih papan fisik di Preview untuk mengaktifkan “Ikuti papan fisik”" : ""}</p>
-      </div>
-      <div class="step">
-        <span class="step-label"><i>2</i>Atur</span>
-        <div class="row">
-          <button ${busy ? "disabled" : ""} onclick="togglePreview()"
-                  title="Satu preview untuk semua pengaturan: zoom, papan render, logo, blur, nama, papan fisik, thumbnail, short">
-            ${picking ? "Tutup preview" : "Preview & atur"}</button>
-        </div>
-        <p class="step-note">Zoom, papan, logo, nama, papan fisik, thumbnail, layout short, mulai/selesai</p>
-      </div>
-      <div class="step">
-        <span class="step-label"><i>3</i>Video panjang</span>
-        <div class="row">
-          <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runRender()"
-                  title="Render video panjang saja (board.mp4 + full-video.mp4). Short punya tombol sendiri.">
-            Render video panjang</button>
-        </div>
-        <div class="row">${fileLink("full-video.mp4")}${fileLink("board.mp4", true)}</div>
-      </div>
-      <div class="step">
-        <span class="step-label"><i>4</i>Short</span>
-        <div class="row">
-          <label class="field" for="shortPlies">ply
-            <input id="shortPlies" type="number" min="1" value="${shortOpts.plies}"
-                   title="Jumlah ply terakhir yang dipakai" oninput="setShortOpt('plies', this.value)"></label>
-          <label class="field" for="shortPad">jeda
-            <input id="shortPad" type="number" min="0.1" step="0.1" value="${shortOpts.pad}"
-                   title="Detik disisakan sebelum & sesudah tiap ply -- makin kecil, makin pendek shortnya"
-                   oninput="setShortOpt('pad', this.value)"></label>
-          <label class="field" for="shortTail">ekor
-            <input id="shortTail" type="number" min="0" step="0.5" value="${shortOpts.tail}"
-                   title="Detik tambahan setelah ply terakhir -- posisi akhir ditahan selama ini"
-                   oninput="setShortOpt('tail', this.value)"></label>
-          <span id="shortEstimate" class="hint num"></span>
-        </div>
-        <div class="row">
-          <button id="shortSave" ${busy || !cutDirty ? "disabled" : ""}
-                  ${cutDirty ? 'class="primary"' : ""} onclick="saveShortOpts()"
-                  title="Simpan ply/jeda/ekor ke proyek ini -- dipakai semua panel yang menghitung durasi, dan bertahan setelah halaman dimuat ulang">
-            ${cutDirty ? "Simpan durasi" : "Tersimpan"}</button>
-          <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runShort()"
-                  title="${hasBoard
-                    ? "Render short.mp4 saja, pakai board.mp4 dari render sebelumnya (video panjang tidak disentuh)"
-                    : "Render short.mp4 saja -- board.mp4 dibuat dulu karena belum ada, jadi kali ini lebih lama"}">
-            Render short</button>
-          ${fileLink("short.mp4")}
-        </div>
-      </div>
-      <div class="step">
-        <span class="step-label"><i>5</i>Terbitkan</span>
-        <div class="row">
-          <button ${uploadFiles(s).length ? "" : "disabled"} onclick="toggleUpload()"
-                  title="Judul, deskripsi, tag per channel + unduh video/thumbnail untuk diunggah manual">
-            ${uploadOpen ? "Tutup paket upload" : "Paket upload"}</button>
-        </div>
-        <p class="step-note">${uploadFiles(s).length ? "Pawn Initiate / Checkmate Theater" : "Render dulu video panjang atau short"}</p>
-      </div>
-    </div>
-    ${s.themes ? lookCard(s) : ""}
-    ${picking ? previewCard(s) : ""}
-    ${uploadOpen && uploadFiles(s).length ? uploadCard(s) : ""}
+    ${stepNav(s)}
+    ${stepBody(s)}
     ${s.log ? `<details class="log" ${logOpen || busy || s.status === "failed" ? "open" : ""}
          ontoggle="logOpen = this.open"><summary>Log</summary>
-       <pre id="log">${escape_(s.log)}</pre></details>` : ""}
-    ${s.waypoints ? waypointsCard(s) : ""}`;
+       <pre id="log">${escape_(s.log)}</pre></details>` : ""}`;
   if (s.waypoints) updateShortEstimate();
   if (picking === "short") { wireShortPicker(); wireShortPreview(); }
   else if (picking) {
@@ -531,6 +643,7 @@ function lookCard(s) {
       style="padding:4px 10px;font-size:12px;${name === s.piece_set
         ? "border-color:var(--accent);color:var(--accent)" : ""}">${escape_(name)}</button>`;
   return `<div class="card">
+    ${stepHead("Tampilan papan", "Warna papan, set bidak, dan tambahan di video. Pilih sebelum render — mengubahnya berarti render ulang.")}
     <div class="row" style="align-items:flex-start;gap:18px">
       <img src="api/projects/${current}/board?ply=${ply}&width=210&_=${lookStamp}"
            class="look-img" style="width:210px;border-radius:8px;flex:none">
@@ -897,7 +1010,7 @@ function pickerBody(s) {
       ${isLayout && !isZoom && s.source_zoom ? ` Pratinjau di bawah sudah mengikuti zoom
       ${s.source_zoom.percent}% yang diatur di tab Zoom — kotak yang kamu buat di sini otomatis
       dalam skala yang sama.` : ""}
-      ${!isThumb ? " Kotak garis putus-putus = pengaturan tab lain, cuma ditampilkan." : ""}</p>
+</p>
     ${isZoom ? `<div class="row" style="margin-bottom:9px;align-items:center">
       <span class="hint">Persen zoom:</span>
       <input id="zoompercent" type="number" min="100" max="500" step="5"
@@ -947,31 +1060,18 @@ function pickerBody(s) {
 // Tabs of the single preview card. Long-video layers first (they share one frame),
 // then the physical board, the thumbnail and the short.
 function previewTabs(s) {
-  const btn = (tab, label, colour, on, disabled = false) => `<button onclick="setPreviewTab('${tab}')"
-      ${disabled ? "disabled" : ""} style="padding:4px 10px;font-size:12px;${on
-      ? `border-color:${colour};color:${colour}` : ""}">${label}</button>`;
-  const layers = Object.entries(LAYERS).map(([name, l]) => btn(name, l.label + (
-      l.special ? (s.source_zoom ? ` (${s.source_zoom.percent}%)` : "")
-                : (l.get(s).length ? ` (${l.get(s).length})` : "")),
-      l.colour, picking === "layout" && layer === name)).join("");
-  return `<div class="row" style="margin-bottom:6px;gap:6px">
-      <span class="hint">Video panjang:</span>${layers}</div>
-    <div class="row" style="margin-bottom:10px;gap:6px">
-      <span class="hint">Lainnya:</span>
-      ${btn("board", `Papan fisik${s.board_quad ? " ✓" : ""}`, "#7bb26a", picking === "board")}
-      ${btn("thumb", `Thumbnail${s.has_thumbnail ? " ✓" : ""}`, "#ff5a5f", picking === "thumb")}
-      ${btn("short", `Short${s.has_short_layout ? " ✓" : ""}`, "#e2b33b", picking === "short", !s.waypoints)}
-    </div>`;
+  const layers = Object.entries(LAYERS).map(([name, l]) => `<button onclick="setPreviewTab('${name}')"
+      style="padding:4px 10px;font-size:12px;${layer === name ? `border-color:${l.colour};color:${l.colour}` : ""}">${
+      l.label}${l.special ? (s.source_zoom ? ` (${s.source_zoom.percent}%)` : "")
+                : (l.get(s).length ? ` (${l.get(s).length})` : "")}</button>`).join("");
+  return `<div class="row" style="margin-bottom:10px;gap:6px">${layers}</div>`;
 }
 
 function previewCard(s) {
   return `<div class="card">
-    <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">Preview & pengaturan</b>
-      <button onclick="closePreview()">Tutup</button>
-    </div>
+    ${stepHead("Tata letak video panjang", "Atur apa yang tampil di video hasil. Kotak garis putus-putus = pengaturan tab lain.")}
     ${previewTabs(s)}
-    ${picking === "short" ? shortEditorCard(s) : pickerBody(s)}
+    ${pickerBody(s)}
   </div>`;
 }
 
@@ -1001,12 +1101,6 @@ function drawGhosts() {
           background:#000a;color:${l.colour};white-space:nowrap">${l.label}</span></div>`;
     });
   });
-  if (picking !== "board" && state.board_quad) {
-    const points = state.board_quad.map((p) => fromSource(p).map((v) => v * scale).join(",")).join(" ");
-    html += `<svg style="position:absolute;left:0;top:0;pointer-events:none;overflow:visible"
-      width="100%" height="100%"><polygon points="${points}" fill="none" stroke="#7bb26a"
-      stroke-width="1" stroke-dasharray="4 3" opacity=".8"></polygon></svg>`;
-  }
   host.innerHTML = html;
 }
 
@@ -2396,7 +2490,7 @@ async function runShort() {
       "Layout short belum diatur (posisi papan / teks caption belum ada).\n\n" +
       "OK  = tetap render pakai posisi papan default\n" +
       "Batal = buka panel layout short dulu")) {
-    if (picking !== "short") setPreviewTab("short");
+    setStep(3);
     return;
   }
   try {
@@ -2816,8 +2910,7 @@ function uploadCard(s) {
     ? "border-color:var(--accent);color:var(--accent)" : ""}">${label}</button>`;
   return `<div class="card" id="uploadCard">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b style="font-size:13px">Paket upload YouTube</b>
-      <button onclick="toggleUpload()">Tutup</button>
+      <b style="font-size:15px">Paket upload YouTube</b>
     </div>
     <p class="hint" style="margin:0 0 10px">Unggah manual lewat YouTube Studio / app: unduh
       filenya, lalu salin judul, deskripsi, dan tag di bawah. (Upload otomatis lewat API
