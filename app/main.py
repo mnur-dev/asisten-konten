@@ -919,7 +919,7 @@ def start_render(project_id: str, full_video: bool = Body(True, embed=True)):
     meta = read_meta(path)
     if not (path / "timestamps.json").is_file():
         raise HTTPException(400, "Run detection first")
-    update(path, status="rendering", error=None)
+    update(path, status="rendering", render_kind="long", error=None)
 
     def work(path: Path):
         data = json.loads((path / "timestamps.json").read_text(encoding="utf-8"))
@@ -979,7 +979,7 @@ def start_short(project_id: str, rebuild_board: bool = Body(False, embed=True)):
     if not (path / "timestamps.json").is_file():
         raise HTTPException(400, "Run detection first")
     plies, pad, tail = short_cut_of(meta)
-    update(path, status="rendering", error=None)
+    update(path, status="rendering", render_kind="short", error=None)
 
     def work(path: Path):
         data = json.loads((path / "timestamps.json").read_text(encoding="utf-8"))

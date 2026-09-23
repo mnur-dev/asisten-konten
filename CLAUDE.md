@@ -175,6 +175,14 @@ Sinkronnya sudah diverifikasi, bukan dikira-kira: render yang sama dengan `start
 dan `start=5,25` dibandingkan frame-per-frame, dan wilayah papan kami maupun wilayah
 siaran sama-sama paling cocok di offset yang **sama** — keduanya tetap sejalan.
 
+**Satu pekerjaan per proyek, dan file yang belum jadi tidak boleh tampak jadi.** Selama
+`background()` jalan, `busy` mematikan semua tombol proyek itu (server 2 vCPU: dua render
+akan berebut CPU dan file yang sama). Yang membingungkan pengguna 2026-09-23: `full-video.mp4`
+sudah muncul di daftar hasil saat masih ditulis ffmpeg, jadi render terlihat selesai padahal
+belum — dan tombol Render short "tidak bisa dipencet". Sekarang `status="rendering"` menyimpan
+`render_kind` ("long"/"short") dan UI menampilkan file yang sedang ditulis sebagai teks mati
+"… · sedang ditulis…" plus keterangan "Sedang dirender — tombol aktif lagi setelah selesai".
+
 **Dua tombol render terpisah.** Video panjang dan short punya tombol dan endpoint
 masing-masing (`/render` dan `/short`), sebab keduanya diulang karena alasan berbeda:
 panjang karena layout/logo berubah, short karena potongan ply/jeda/ekor atau caption

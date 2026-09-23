@@ -492,8 +492,13 @@ function stepBody(s) {
   const observed = done.filter((w) => w.observed).length;
   const hasBoard = outputs.includes("board.mp4");
   const cutDirty = shortOptsDirty(s);
-  const fileLink = (f, quiet) => outputs.includes(f)
-    ? `<a class="file${quiet ? " quiet" : ""}" href="api/projects/${current}/file/${f}" target="_blank">${f} ↗</a>` : "";
+  // While a render runs, the file it is writing already exists but is incomplete --
+  // showing it as a finished result is what made "render selesai" look true early.
+  const writing = busy && s.status === "rendering" ? (s.render_kind === "short" ? ["short.mp4"] : ["full-video.mp4", "board.mp4"]) : [];
+  const fileLink = (f, quiet) => !outputs.includes(f) ? ""
+    : writing.includes(f)
+    ? `<span class="file quiet" title="Masih ditulis oleh render yang sedang berjalan">${f} · sedang ditulis…</span>`
+    : `<a class="file${quiet ? " quiet" : ""}" href="api/projects/${current}/file/${f}" target="_blank">${f} ↗</a>`;
   if (step === 1) return `
     <div class="card">
       ${stepHead("Deteksi", "Aplikasi membaca papan digital di video dan mencocokkannya dengan PGN, jadi tiap langkah dapat waktunya sendiri.")}
@@ -549,6 +554,8 @@ function stepBody(s) {
       <div class="render-grid">
         <div class="render-item">
           <b>Video panjang</b>
+          ${busy ? `<span class="hint">${s.status === "rendering" && s.render_kind !== "short"
+            ? "Sedang dirender — tombol aktif lagi setelah selesai." : "Ada pekerjaan lain berjalan."}</span>` : ""}
           <div class="row">
             <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runRender()"
                     title="Render board.mp4 + full-video.mp4">Render video panjang</button>
@@ -557,6 +564,8 @@ function stepBody(s) {
         </div>
         <div class="render-item">
           <b>Short</b>
+          ${busy ? `<span class="hint">${s.status === "rendering" && s.render_kind === "short"
+            ? "Sedang dirender…" : "Menunggu pekerjaan yang sedang berjalan selesai."}</span>` : ""}
           <div class="row">
             <button class="primary" ${busy || !s.waypoints ? "disabled" : ""} onclick="runShort()"
                     title="${hasBoard ? "Pakai board.mp4 dari render sebelumnya"
