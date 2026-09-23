@@ -192,7 +192,10 @@
   a.btnlink { display: inline-block; background: var(--panel); color: var(--ink); border: 1px solid var(--line);
              padding: 7px 13px; border-radius: 6px; text-decoration: none; }
   a.btnlink.primary { background: var(--accent); border-color: var(--accent); color: #10210c; font-weight: 600; }
-  .pickarea, .pickarea img { -webkit-touch-callout: none; -webkit-user-select: none; }
+  .pickarea, .pickarea img, .nomenu, .nomenu img, .nomenu video {
+    -webkit-touch-callout: none; -webkit-user-select: none; user-select: none; }
+  .pickarea img { pointer-events: none; }        /* presses land on the wrap, never the <img> */
+  .pickarea.drawing { outline: 2px solid var(--accent); outline-offset: 2px; }
   .touch-only { display: none; }
   @media (hover: none) and (pointer: coarse) { .touch-only { display: block; } }
   /* Phones: the two fixed-height scroll panes become one normal page, the
@@ -1245,7 +1248,7 @@ function shortEditorCard(s) {
       <div>
         <p class="hint" style="margin:0 0 9px">Live -- ikut berubah begitu kotak di kiri digeser
           atau disimpan. Papan & teks sama persis dengan hasil render; cuma blur latar yang didekati.</p>
-        <div id="shortPreviewWrap" style="position:relative;width:300px;max-width:100%;
+        <div id="shortPreviewWrap" class="nomenu" style="position:relative;width:300px;max-width:100%;
              aspect-ratio:${SHORT_W}/${SHORT_H};background:#000;border-radius:10px;overflow:hidden;
              margin:0 auto">
           <img id="spBackdrop" style="position:absolute;inset:0;width:100%;height:100%;object-fit:cover"
@@ -3179,7 +3182,11 @@ async function copyUpload(field, button) {
     buttons: type === "mousedown" || type === "mousemove" ? 1 : 0,
     clientX: t.clientX, clientY: t.clientY }));
   const under = (t) => document.elementFromPoint(t.clientX, t.clientY) || document.body;
-  const reset = () => { clearTimeout(timer); origin = null; dragging = false; };
+  const reset = () => {
+    clearTimeout(timer);
+    origin?.closest(".pickarea")?.classList.remove("drawing");
+    origin = null; dragging = false;
+  };
   document.addEventListener("touchstart", (e) => {
     const el = e.target.closest && e.target;
     if (!el || !el.closest(".pickarea") || el.closest("button, input") || e.touches.length > 1) {
@@ -3190,6 +3197,7 @@ async function copyUpload(field, button) {
     timer = setTimeout(() => {
       dragging = true;
       if (navigator.vibrate) navigator.vibrate(12);
+      origin.closest(".pickarea")?.classList.add("drawing");   // visible: the gesture is ours now
       fire("mousedown", origin, t);
     }, HOLD_MS);
   }, { passive: true });
@@ -3214,8 +3222,12 @@ async function copyUpload(field, button) {
   };
   document.addEventListener("touchend", end, { passive: false });
   document.addEventListener("touchcancel", end);
-  // Long-press on an image would otherwise open the save/share menu.
+  // Long-press on an image would otherwise open the save/share menu -- over any picker
+  // and over the short preview, where a press is never meant to open anything.
   document.addEventListener("contextmenu", (e) => {
+    if (e.target.closest && e.target.closest(".pickarea, .nomenu")) e.preventDefault();
+  }, { capture: true });
+  document.addEventListener("selectstart", (e) => {
     if (e.target.closest && e.target.closest(".pickarea")) e.preventDefault();
   });
 })();

@@ -133,7 +133,10 @@ class NewProject(BaseModel):
 
 @app.get("/", response_class=HTMLResponse)
 def index():
-    return UI.read_text(encoding="utf-8")
+    # no-store: the page has no build step and no hashed filename, so a phone that
+    # heuristically cached it would keep running yesterday's UI against today's API.
+    return HTMLResponse(UI.read_text(encoding="utf-8"),
+                        headers={"Cache-Control": "no-store, must-revalidate"})
 
 
 @app.get("/api/projects")

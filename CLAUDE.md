@@ -102,7 +102,13 @@ redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB pe
    diganti JPEG `/frame` detik itu — kotak selalu digambar di atas still dari backend.
    Di HP semua picker (`#pickwrap`) jalan lewat jembatan sentuh→mouse di akhir script:
    sentuh-tahan 280 ms lalu geser = klik-kiri-tahan; usapan langsung tetap scroll
-   halaman; ketuk = klik. Picker baru di dalam `#pickwrap` otomatis ikut.
+   halaman; ketuk = klik. Picker baru ikut otomatis asal wrapper-nya berkelas `.pickarea`
+   (pernah terlewat di editor short: tekan-lama jadi membuka menu browser). Saat tahan
+   berhasil, wrapper diberi kelas `.drawing` (outline hijau) supaya jelas gestur sudah
+   diambil alih. `contextmenu` dicegat di fase capture untuk `.pickarea` dan `.nomenu`
+   (preview short), `.pickarea img` dibuat `pointer-events:none` supaya sentuhan selalu
+   mendarat di wrapper. Halaman disajikan `Cache-Control: no-store` — tanpa itu HP bisa
+   menjalankan UI kemarin (tidak ada build step / nama file ber-hash).
    Kotak yang sudah ada (tersimpan maupun baru digambar) bisa digeser lewat
    `wireBoxDrag()` — tata letak, kotak judul thumbnail; short punya
    `wireShortBoxDrag()` sendiri. Kotak tersimpan langsung disimpan saat dilepas.
