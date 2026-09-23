@@ -146,6 +146,7 @@ def list_projects():
         if (path / "meta.json").is_file():
             meta = read_meta(path)
             items.append({"id": path.name, "name": meta.get("name"), "status": meta.get("status"),
+                         "uploads": meta.get("uploads") or [],
                          "created": meta.get("created", path.stat().st_ctime)})
     items.sort(key=lambda p: p["created"], reverse=True)
     return {"projects": items}
@@ -422,11 +423,17 @@ def status(project_id: str):
 
 
 @app.delete("/api/projects")
-def delete_all():
-    """Wipe every project. Busy ones are left alone and named back to the UI."""
+def delete_all(only: str = "uploaded"):
+    """Wipe projects. `only=uploaded` (the default) keeps everything that has not been
+    marked as uploaded yet -- the usual clean-up is "the ones already published can go".
+    `only=all` wipes the lot. Busy ones are left alone and named back to the UI."""
+    if only not in ("uploaded", "all"):
+        raise HTTPException(400, "only must be uploaded or all")
     deleted, busy = 0, []
     for path in PROJECTS.iterdir():
         if not (path / "meta.json").is_file():
+            continue
+        if only == "uploaded" and not (read_meta(path).get("uploads") or []):
             continue
         if path.name in _running:
             busy.append(read_meta(path).get("name") or path.name)
@@ -1263,6 +1270,30 @@ def set_upload_template(slug: str, body: UploadText):
     stored[slug] = {"description": body.description, "tags": [t for t in body.tags if t.strip()]}
     UPLOAD_TEMPLATES.write_text(json.dumps(stored, ensure_ascii=False, indent=1), encoding="utf-8")
     return {"ok": True}
+
+
+class UploadMark(BaseModel):
+    channel: str
+    file: str
+    title: str = ""
+    remove: bool = False
+
+
+@app.post("/api/projects/{project_id}/uploaded")
+def mark_uploaded(project_id: str, body: UploadMark):
+    """Record (or clear) that this project's video was uploaded to a channel. One entry
+    per channel+file, so a project can be marked for the long video and the short
+    separately. What the sidebar's "hapus yang sudah diupload" goes by."""
+    if body.channel not in UPLOAD_CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    path = folder(project_id)
+    uploads = [u for u in (read_meta(path).get("uploads") or [])
+               if not (u.get("channel") == body.channel and u.get("file") == body.file)]
+    if not body.remove:
+        uploads.append({"channel": body.channel, "file": body.file, "title": body.title.strip(),
+                        "at": time.strftime("%Y-%m-%d %H:%M")})
+    update(path, uploads=uploads)
+    return {"uploads": uploads}
 
 
 class TitleRequest(BaseModel):

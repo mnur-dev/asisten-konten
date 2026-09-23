@@ -145,6 +145,11 @@
                      background: var(--field); border: 1px solid var(--line); display: block; }
   .final-frame:hover img { border-color: var(--accent); }
   .final-frame b { color: var(--ink); font-weight: 500; }
+  .cutbar { position: relative; height: 8px; border-radius: 4px; background: var(--field);
+            border: 1px solid var(--line); margin-top: 10px; overflow: hidden; }
+  .cutbar .keep { position: absolute; top: 0; bottom: 0; background: var(--accent); opacity: .55; }
+  .cutbar .mark { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--ink); opacity: .6; }
+  .warn-text { color: var(--warn); }
   details.log { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
                 margin-bottom: 15px; }
   details.log summary { cursor: pointer; padding: 10px 14px; color: var(--muted); font-size: 12px;
@@ -283,26 +288,34 @@ async function loadList() {
     <div class="proj ${p.id === current ? "on" : ""}" onclick="open_('${p.id}')">
       <b>${escape_(p.name || p.id)}</b>
       <span class="pill ${p.status === "failed" ? "bad" : p.status === "done" ? "ok" : ""}">${STATUS_TEXT[p.status] || p.status}</span>
+      ${(p.uploads || []).length ? `<span class="pill ok" style="margin-left:5px"
+        title="Sudah diupload: ${escape_(p.uploads.map((u) => `${u.channel} (${u.file})`).join(", "))}">↑ diupload</span>` : ""}
       <button title="Hapus proyek" aria-label="Hapus proyek ${escape_(p.name || p.id)}"
         onclick="event.stopPropagation();deleteProject('${p.id}','${escape_(p.name || p.id).replace(/'/g, "\\'")}')">×</button></div>`).join("")
     || `<p class="hint">Belum ada proyek.</p>`;
   $("drawerToggle").textContent = `Proyek (${projects.length})`;
   // Wiping everything is permanent, so the button only exists when there is
   // something to wipe -- and it asks twice.
+  const uploaded = projects.filter((p) => (p.uploads || []).length);
   if (projects.length) $("list").insertAdjacentHTML("beforeend",
-    `<div class="list-foot"><button class="danger" onclick="deleteAllProjects(${projects.length})"
-       style="width:100%;font-size:12px">Hapus semua proyek</button></div>`);
+    `<div class="list-foot"><button class="danger" ${uploaded.length ? "" : "disabled"}
+       onclick="deleteUploadedProjects(${uploaded.length})" style="width:100%;font-size:12px"
+       title="${uploaded.length ? "Hapus proyek yang sudah ditandai diupload"
+         : "Belum ada proyek yang ditandai sudah diupload"}">
+       Hapus proyek yang sudah diupload${uploaded.length ? ` (${uploaded.length})` : ""}</button></div>`);
 }
 
-async function deleteAllProjects(count) {
-  if (!confirm(`Hapus SEMUA ${count} proyek? Semua video dan datanya akan hilang permanen.`)) return;
+async function deleteUploadedProjects(count) {
+  if (!count) return;
+  if (!confirm(`Hapus ${count} proyek yang sudah ditandai diupload? Video dan datanya hilang permanen.`)) return;
   if (!confirm("Yakin? Tindakan ini tidak bisa dibatalkan.")) return;
   try {
-    const { deleted, busy } = await api("api/projects", { method: "DELETE" });
-    current = null; selected = null; clearInterval(timer); clearInterval(rafId);
-    $("panel").innerHTML = "";
+    const { deleted, busy } = await api("api/projects?only=uploaded", { method: "DELETE" });
+    if (!(await api("api/projects")).projects.some((p) => p.id === current)) {
+      current = null; selected = null; clearInterval(timer); clearInterval(rafId); $("panel").innerHTML = "";
+    }
     await loadList();
-    if (busy.length) alert(`${deleted} proyek dihapus. Masih sibuk, dilewati: ${busy.join(", ")}`);
+    alert(`${deleted} proyek dihapus.` + (busy.length ? ` Masih sibuk, dilewati: ${busy.join(", ")}` : ""));
   } catch (e) { alert(e.message); }
 }
 
@@ -629,6 +642,9 @@ function draw() {
           <span class="num">${s.plies_total} ply</span>
           ${s.duration ? `<span class="num">${fmtTime(s.duration)}</span>` : ""}
           <span class="pill ${statusTone(s)}">${statusLabel(s)}</span>
+          ${(s.uploads || []).map((u) => `<span class="pill ok"
+            title="Ditandai sudah diupload ${escape_(u.at)}${u.title ? ` — “${escape_(u.title)}”` : ""}">
+            ↑ ${escape_(CHANNEL_NAMES[u.channel] || u.channel)}${u.file === "short.mp4" ? " · Short" : ""}</span>`).join("")}
           ${s.waypoints ? `<span title="${observed} ply terbaca langsung dari papan overlay">
             <span class="num">${done.length}/${s.plies_total}</span> ply berwaktu</span>` : ""}
         </p>
@@ -940,20 +956,27 @@ function renderPickInfo(t) {
   const w = outputWindow(state);
   let html = "";
   if (w) {
-    const pos = Math.max(0, t - w.lo), total = w.hi - w.lo;
-    const stop = Math.round(t - w.last), start = Math.round(w.first - t);
-    html = `Di video jadi: <b>${fmtTime(pos)}</b> / ${fmtTime(total)} · sisa ${fmtTime(total - pos)}`;
-    if (picking === "window") html += `
-      <div class="row" style="margin-top:5px;gap:6px">
-      ${stop >= 0
-        ? `<span>Stop di sini → isi <b>selesai + ${stop}</b></span>
-           <button onclick="useWindowValue('outro', ${stop})" style="padding:3px 10px;font-size:12px">Pakai</button>`
-        : `<span>Belum bisa stop di sini: langkah terakhir di ${fmtTime(w.last)}</span>`}
-      ${start >= 0
-        ? `<span style="margin-left:8px">Mulai di sini → isi <b>mulai − ${start}</b></span>
-           <button onclick="useWindowValue('lead', ${start})" style="padding:3px 10px;font-size:12px">Pakai</button>`
-        : ""}
+    const total = w.hi - w.lo;
+    const inside = t >= w.lo && t <= w.hi;
+    html = inside
+      ? `Di video jadi: <b>${fmtTime(t - w.lo)}</b> / ${fmtTime(total)} · sisa ${fmtTime(w.hi - t)}`
+      : `<span class="warn-text">Detik ini ${t < w.lo ? "sebelum awal" : "setelah akhir"} potongan — tidak ikut di video jadi.</span>`;
+    if (picking === "window") {
+      // lead_in/outro are offsets from move 1 and the last move, so a start after
+      // move 1 (or an end before the last move) has no value to express.
+      const start = Math.round(w.first - t), stop = Math.round(t - w.last);
+      html += `<div class="row" style="margin-top:7px;gap:7px">
+        <button ${start >= 0 ? "" : "disabled"} onclick="useWindowValue('lead', ${Math.max(0, start)})"
+          title="${start >= 0 ? `Video mulai di sini — isi mulai − ${start} dtk`
+            : `Tidak bisa: video panjang selalu mulai paling lambat di langkah 1 (${fmtTime(w.first)})`}">
+          Pakai sebagai awal</button>
+        <button ${stop >= 0 ? "" : "disabled"} onclick="useWindowValue('outro', ${Math.max(0, stop)})"
+          title="${stop >= 0 ? `Video berhenti di sini — isi selesai + ${stop} dtk`
+            : `Tidak bisa: video panjang selalu lewat langkah terakhir (${fmtTime(w.last)})`}">
+          Pakai sebagai akhir</button>
+        <span class="hint">${start >= 0 ? `awal −${start} dtk` : ""}${start >= 0 && stop >= 0 ? " · " : ""}${stop >= 0 ? `akhir +${stop} dtk` : ""}</span>
       </div>`;
+    }
   }
   if (html !== pickInfoHtml) { host.innerHTML = html; pickInfoHtml = html; }
 }
@@ -987,7 +1010,7 @@ function scrubControls(id, at, duration, extra = "", min = 0) {
     <span id="${id}Total" class="hint">/ ${fmtTime(duration)}</span>
     ${extra}
   </div>
-  ${id === "pick" && picking === "window" ? windowInputs() : ""}
+  ${id === "pick" && picking === "window" ? cutBar() + windowInputs() : ""}
   <div id="${id}Info" class="hint scrub-info" style="margin-top:6px"></div>`;
 }
 function wireScrubber(id, img, { frameSrc, onTime, onLabel }) {
@@ -1061,7 +1084,10 @@ function pickerBody(s) {
   const isLayout = picking === "layout", isThumb = picking === "thumb", isWindow = picking === "window";
   const isZoom = isLayout && layer === "zoom";
   const duration = s.duration || 60;
-  const win = isThumb ? null : outputWindow(s);
+  // The window step scrubs the WHOLE broadcast: you cannot pick a start that is
+  // outside the range you are allowed to scrub to. The saved cut is drawn under the
+  // slider instead. Other steps stay inside the cut, which is all they render.
+  const win = isThumb || isWindow ? null : outputWindow(s);
   const lo = win ? win.lo : 0, hi = win ? win.hi : duration;
   const fallback = isThumb && s.thumb_time != null ? s.thumb_time : Math.round(lo + (hi - lo) * 0.55);
   const at = Math.min(Math.max(pickAt ?? fallback, lo), hi);
@@ -1359,6 +1385,24 @@ function setLeadIn(value) {
 
 // "mulai −" / "selesai +" for the long video, under the preview whose slider they
 // bound. Saved on change (and again just before a render), so a reload keeps them.
+// The saved cut over the whole broadcast: everything outside it is dropped.
+function cutBar() {
+  const w = outputWindow(state), total = state.duration || 0;
+  if (!w || !total) return "";
+  const pct = (x) => (100 * x / total).toFixed(2) + "%";
+  return `<div class="cutbar" title="Bagian hijau = yang masuk video jadi">
+      <div class="keep" style="left:${pct(w.lo)};width:${pct(w.hi - w.lo)}"></div>
+      <div class="mark" style="left:${pct(w.first)}" title="langkah 1"></div>
+      <div class="mark" style="left:${pct(w.last)}" title="langkah terakhir"></div>
+    </div>
+    <div class="row" style="justify-content:space-between;margin-top:3px">
+      <span class="hint num">0:00</span>
+      <span class="hint">potongan <b class="num">${fmtTime(w.lo)}</b> – <b class="num">${fmtTime(w.hi)}</b>
+        (<span class="num">${fmtTime(w.hi - w.lo)}</span>)</span>
+      <span class="hint num">${fmtTime(total)}</span>
+    </div>`;
+}
+
 function windowInputs() {
   const group = "display:inline-flex;align-items:center;gap:6px;white-space:nowrap";
   return `<div class="row" style="margin-top:8px;gap:8px 16px">
@@ -3072,6 +3116,7 @@ function uploadCard(s) {
               title="Deskripsi & tag ini jadi isi awal untuk proyek lain di channel yang sama">
         Jadikan default channel</button>
     </div>
+    ${uploadMark(s)}
     <div class="row" style="gap:8px;margin-top:12px">
       ${uploadFile ? `<a class="btnlink primary" href="api/projects/${current}/file/${uploadFile}"
           download="${escape_(safeName)}${uploadFile === "short.mp4" ? " (short)" : ""}.mp4">Unduh video</a>` : ""}
@@ -3088,6 +3133,8 @@ function uploadCard(s) {
 // Five titles from Claude Code (core/titles.py): source title + PGN + the channel's
 // measured patterns. Only channels with a pattern file in title-patterns/ get it.
 const TITLE_PATTERN_CHANNELS = ["pawn-initiate"];
+// Names for the badges, which are drawn before the upload card has loaded its templates.
+const CHANNEL_NAMES = { "pawn-initiate": "Pawn Initiate", "checkmate-theater": "Checkmate Theater" };
 let titleBusy = false, titleError = "";
 
 function titleSuggestBox(s) {
@@ -3127,6 +3174,34 @@ function useSuggestedTitle(index) {
   const title = state.title_suggestions[`${uploadChannel}:${kind}`].titles[index].title;
   $("up-title").value = title;
   onUploadInput("title", title);
+}
+
+// A project is "done" once its video is actually on a channel. Marked by hand (the
+// app cannot upload; see the audit note), per channel and file, and that mark is what
+// the sidebar's "hapus yang sudah diupload" goes by.
+function uploadedEntry(s, channel = uploadChannel, file = uploadFile) {
+  return (s.uploads || []).find((u) => u.channel === channel && u.file === file);
+}
+function uploadLabel(u) {
+  const name = uploadTemplates?.[u.channel]?.name || CHANNEL_NAMES[u.channel] || u.channel;
+  return `${name} · ${u.file === "short.mp4" ? "Short" : "video panjang"}`;
+}
+function uploadMark(s) {
+  const done = uploadedEntry(s);
+  return `<div class="row" style="gap:8px;margin-top:14px;align-items:center">
+    ${done ? `<span class="pill ok">Sudah diupload</span>
+      <span class="hint">${escape_(uploadLabel(done))} · ${escape_(done.at)}</span>
+      <button class="ghost" onclick="markUploaded(true)">Batalkan tanda</button>`
+      : `<button onclick="markUploaded(false)" title="Tandai video ini sudah diunggah ke channel yang dipilih">
+           Tandai sudah diupload</button>
+         <span class="hint">setelah diunggah lewat YouTube Studio / app</span>`}
+  </div>`;
+}
+async function markUploaded(remove) {
+  try {
+    await post("uploaded", { channel: uploadChannel, file: uploadFile, title: uploadForm?.title || "", remove });
+    await refresh(); await loadList();
+  } catch (e) { alert(e.message); }
 }
 
 async function switchUpload(apply) {

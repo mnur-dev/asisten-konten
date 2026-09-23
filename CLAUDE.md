@@ -52,6 +52,21 @@ Terukur: 0,4–0,8 dtk per frame, 5 frame termuat ±3 dtk; dibanding frame `full
 di detik yang sama selisih rata-rata ~3/255 per piksel (noise kompresi). File furniture
 preview ditulis ke folder sementara per request karena 5 request jalan bersamaan.
 
+**Langkah 4 menggeser seluruh siaran, bukan cuma potongannya.** Slider di langkah
+"Mulai & selesai" mencakup 0–durasi penuh (langkah lain tetap dibatasi potongan), sebab titik
+awal/akhir tidak bisa dipilih di luar rentang yang boleh digeser. Di bawah slider `cutBar()`
+menggambar potongan tersimpan (hijau) plus garis langkah 1 dan langkah terakhir, dan ada dua
+tombol simetris: **Pakai sebagai awal** (`lead_in = langkah1 − t`) dan **Pakai sebagai akhir**
+(`outro = t − langkah terakhir`). Masing-masing mati kalau tidak bisa dinyatakan — video
+panjang selalu mulai paling lambat di langkah 1 dan selalu lewat langkah terakhir.
+
+**Penanda upload.** `meta["uploads"]` berisi satu entri per channel+file
+(`{channel, file, title, at}`), ditandai manual lewat "Tandai sudah diupload" di paket upload
+(aplikasi tidak mengunggah sendiri — lihat catatan audit). Pill "↑ <channel>" muncul di header
+proyek dan di daftar proyek. Tombol sidebar sekarang **"Hapus proyek yang sudah diupload"**
+(`DELETE /api/projects?only=uploaded`; `only=all` masih ada untuk menghapus semuanya), mati
+kalau belum ada yang ditandai.
+
 **Mulai & selesai butuh deteksi.** Keduanya relatif terhadap langkah pertama/terakhir, jadi
 sebelum ada timestamp preview tidak bisa dipotong — langkah 3–5 terkunci sampai deteksi
 selesai. (Pernah membingungkan: di proyek yang belum dideteksi nilainya bisa disimpan tetapi
