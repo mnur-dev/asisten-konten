@@ -304,10 +304,21 @@ yang salah, atau saldo habis hanya bisa dikenali dari kalimatnya sendiri.
 **Klasifikasi langkah (`core/classify.py`).** Nilai tiap langkah ala chess.com:
 `brilliant`, `great`, `best`, `excellent`, `good`, `inaccuracy`, `mistake`, `blunder`.
 Diukur di **kurva win% Lichess**, bukan centipawn — selisih 100 cp tidak berarti apa-apa
-di +9 tapi menentukan di 0.00. Tiga ambang Lichess yang dipublikasikan (10 / 20 / 30 poin
-win% yang dilepas) menandai inaccuracy/mistake/blunder; di atasnya `excellent` (<2) dan
-`good` (<10) adalah pilihan kita sendiri. Ambang chess.com tidak dipublikasikan, jadi
-namanya saja yang dipinjam.
+di +9 tapi menentukan di 0.00. Tangganya (`LADDER`) sekarang **2 / 8 / 14 / 20**:
+excellent <2, good <8, inaccuracy <14, mistake <20, dan **blunder ≥20**. Semula memakai
+tiga ambang Lichess yang dipublikasikan (10 / 20 / 30), tapi di materi channel ini blunder
+tidak pernah muncul: dari 283 ply terklasifikasi di empat partai elit, yang terburuk melepas
+29,8 poin (Nxd3, Carlsen–Keymer) dan cuma disebut mistake. Atas permintaan pengguna
+(2026-09-23) ambang blunder diturunkan ke 20 dan rung di bawahnya dirapatkan supaya tetap
+empat pita: hasilnya 2 blunder (29,8 dan 21,7) dan 5 inaccuracy di 283 ply itu. Ambang
+chess.com tidak dipublikasikan, jadi namanya saja yang dipinjam.
+
+Mengubah tangga **tidak** otomatis melabeli ulang proyek lama (`moves.json` menyimpan label
+saat analisis). Yang dipakai 2026-09-23: relabel dari `loss` yang tersimpan, hanya untuk
+label yang memang berasal dari tangga (excellent/good/inaccuracy/mistake/blunder) — `best`,
+`great`, dan `brilliant` datang dari data engine dan tidak boleh ditebak ulang. Salinannya
+disimpan sebagai `moves.json.bak`. Karena badge ikut `board_look_of()`, board.mp4 proyek
+yang berubah label otomatis dianggap basi dan dibangun ulang saat render berikutnya.
 
 `best` dan `great` butuh langkah terbaik versi engine, jadi hanya muncul lewat jalur
 `analyse_game()`. PGN yang cuma punya `[%eval]` tetap dapat semua nilai lain — posisi

@@ -35,7 +35,14 @@ VALUES = {chess.PAWN: 1.0, chess.KNIGHT: 3.0, chess.BISHOP: 3.25,
 
 # Win% given away by the move, against the engine's best line from the same position.
 # Read as "loss below this rung earns this name"; worse than the last rung is a blunder.
-LADDER = ((2.0, "excellent"), (10.0, "good"), (20.0, "inaccuracy"), (30.0, "mistake"))
+#
+# Blunder used to sit at Lichess's published 30, which in practice never fired on this
+# channel's material: across 283 graded plies from four elite games the worst move lost
+# 29.8 points (Nxd3, Carlsen-Keymer) and was called a mistake. The user asked for
+# blunders to be easier to earn, so the rung moved to 20 and the ones below it were
+# tightened to keep four usable bands. Measured on the same 283 plies: 2 blunders
+# (29.8 and 21.7), 5 inaccuracies, the rest good/excellent -- still rare, no longer never.
+LADDER = ((2.0, "excellent"), (8.0, "good"), (14.0, "inaccuracy"), (20.0, "mistake"))
 
 SACRIFICE = 1.5     # pawns handed over before a move counts as a sacrifice at all
 ONLY_MOVE = 15.0    # win% the second-best line must trail by for a "great" move
