@@ -60,12 +60,16 @@ tombol simetris: **Pakai sebagai awal** (`lead_in = langkah1 − t`) dan **Pakai
 (`outro = t − langkah terakhir`). Masing-masing mati kalau tidak bisa dinyatakan — video
 panjang selalu mulai paling lambat di langkah 1 dan selalu lewat langkah terakhir.
 
-**Penanda upload.** `meta["uploads"]` berisi satu entri per channel+file
-(`{channel, file, title, at}`), ditandai manual lewat "Tandai sudah diupload" di paket upload
-(aplikasi tidak mengunggah sendiri — lihat catatan audit). Pill "↑ <channel>" muncul di header
-proyek dan di daftar proyek. Tombol sidebar sekarang **"Hapus proyek yang sudah diupload"**
-(`DELETE /api/projects?only=uploaded`; `only=all` masih ada untuk menghapus semuanya), mati
-kalau belum ada yang ditandai.
+**Penanda upload ada di daftar proyek.** Tiap baris proyek punya satu avatar channel per
+channel (`GET /api/channels/{slug}/logo` — avatar YouTube diunduh ke `app/ui/channels/`);
+abu-abu = belum, berwarna + cincin ungu = sudah. Klik untuk menandai/membatalkan
+(`POST /uploaded`, satu entri per channel: `{channel, title, at}` di `meta["uploads"]`).
+Proyek yang sudah ditandai **tidak lagi** menampilkan pill status "selesai" — tanda upload
+menggantikannya, dan warnanya sengaja beda (`--mark` ungu vs `--accent` hijau) supaya
+"selesai dirender" tidak tertukar dengan "sudah tayang". Tombol sidebar
+**"Hapus proyek yang sudah diupload"** (`DELETE /api/projects?only=uploaded`; `only=all`
+masih ada) mati kalau belum ada yang ditandai. Entri lama yang masih membawa kunci `file`
+tetap terbaca — kunci itu diabaikan.
 
 **Mulai & selesai butuh deteksi.** Keduanya relatif terhadap langkah pertama/terakhir, jadi
 sebelum ada timestamp preview tidak bisa dipotong — langkah 3–5 terkunci sampai deteksi

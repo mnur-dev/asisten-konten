@@ -1274,23 +1274,32 @@ def set_upload_template(slug: str, body: UploadText):
 
 class UploadMark(BaseModel):
     channel: str
-    file: str
     title: str = ""
     remove: bool = False
 
 
+@app.get("/api/channels/{slug}/logo")
+def channel_logo(slug: str):
+    """The channel's YouTube avatar, downloaded into the repo (app/ui/channels) so the
+    marks read at a glance instead of as two similar names."""
+    logo = UI.parent / "channels" / f"{Path(slug).name}.jpg"
+    if slug not in UPLOAD_CHANNELS or not logo.is_file():
+        raise HTTPException(404, "No logo")
+    return FileResponse(logo, media_type="image/jpeg",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
 @app.post("/api/projects/{project_id}/uploaded")
 def mark_uploaded(project_id: str, body: UploadMark):
-    """Record (or clear) that this project's video was uploaded to a channel. One entry
-    per channel+file, so a project can be marked for the long video and the short
-    separately. What the sidebar's "hapus yang sudah diupload" goes by."""
+    """Record (or clear) that this project went up on a channel -- one entry per
+    channel, marked by hand from the project list (the app cannot upload; see the
+    audit note). What the sidebar's "hapus yang sudah diupload" goes by."""
     if body.channel not in UPLOAD_CHANNELS:
         raise HTTPException(404, "Unknown channel")
     path = folder(project_id)
-    uploads = [u for u in (read_meta(path).get("uploads") or [])
-               if not (u.get("channel") == body.channel and u.get("file") == body.file)]
+    uploads = [u for u in (read_meta(path).get("uploads") or []) if u.get("channel") != body.channel]
     if not body.remove:
-        uploads.append({"channel": body.channel, "file": body.file, "title": body.title.strip(),
+        uploads.append({"channel": body.channel, "title": body.title.strip(),
                         "at": time.strftime("%Y-%m-%d %H:%M")})
     update(path, uploads=uploads)
     return {"uploads": uploads}

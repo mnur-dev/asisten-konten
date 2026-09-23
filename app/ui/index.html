@@ -18,6 +18,7 @@
     --ink: #e6eae4; --muted: #8d988f; --faint: #5f6a63;
     --accent: #86b86b; --accent-ink: #0e1c09; --accent-soft: #86b86b1f;
     --info: #6fa8d4; --warn: #d9a441; --bad: #e0695e;
+    --mark: #b394f5; --mark-soft: #b394f524;   /* "sudah diupload", never the same as "selesai" */
     --radius: 8px;
     --sans: "Figtree", system-ui, -apple-system, "Segoe UI", sans-serif;
     --mono: "JetBrains Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
@@ -62,14 +63,23 @@
 
   /* project list */
   .proj { padding: 9px 10px; border-radius: 6px; cursor: pointer; display: grid;
-          grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; }
+          grid-template-columns: 1fr auto; align-items: center; gap: 5px 8px; }
+  .proj .marks { grid-column: 1; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  button.mark { padding: 0; border-radius: 50%; width: 26px; height: 26px; background: transparent;
+                border: 1px solid var(--line); overflow: hidden; line-height: 0; flex: none; }
+  button.mark img { width: 100%; height: 100%; object-fit: cover; filter: grayscale(1); opacity: .35; }
+  button.mark:hover img { opacity: .75; }
+  button.mark.on { border-color: var(--mark); box-shadow: 0 0 0 2px var(--mark-soft); }
+  button.mark.on img { filter: none; opacity: 1; }
+  .pill.up { color: var(--mark); border-color: var(--mark); background: var(--mark-soft); gap: 5px; }
+  .pill.up::before { display: none; }
+  .chlogo { width: 15px; height: 15px; border-radius: 50%; object-fit: cover; }
   .proj:hover { background: var(--panel); }
   .proj.on { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
   .proj b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .proj .pill { grid-column: 1; justify-self: start; }
-  .proj button { grid-row: 1 / span 2; grid-column: 2; padding: 2px 8px; font-size: 12px;
-                 color: var(--faint); background: transparent; border-color: transparent; }
-  .proj button:hover:not(:disabled) { color: var(--bad); }
+  .proj button.del { grid-row: 1 / span 2; grid-column: 2; padding: 2px 8px; font-size: 12px;
+                     color: var(--faint); background: transparent; border-color: transparent; }
+  .proj button.del:hover:not(:disabled) { color: var(--bad); }
   .list-foot { margin-top: auto; padding-top: 8px; }
 
   /* status pill: state in form, not only in words */
@@ -284,14 +294,25 @@ async function api(path, options) {
 
 async function loadList() {
   const { projects } = await api("api/projects");
-  $("list").innerHTML = projects.map((p) => `
+  $("list").innerHTML = projects.map((p) => {
+    const uploads = p.uploads || [];
+    return `
     <div class="proj ${p.id === current ? "on" : ""}" onclick="open_('${p.id}')">
       <b>${escape_(p.name || p.id)}</b>
-      <span class="pill ${p.status === "failed" ? "bad" : p.status === "done" ? "ok" : ""}">${STATUS_TEXT[p.status] || p.status}</span>
-      ${(p.uploads || []).length ? `<span class="pill ok" style="margin-left:5px"
-        title="Sudah diupload: ${escape_(p.uploads.map((u) => `${u.channel} (${u.file})`).join(", "))}">↑ diupload</span>` : ""}
-      <button title="Hapus proyek" aria-label="Hapus proyek ${escape_(p.name || p.id)}"
-        onclick="event.stopPropagation();deleteProject('${p.id}','${escape_(p.name || p.id).replace(/'/g, "\\'")}')">×</button></div>`).join("")
+      <div class="marks">
+        ${uploads.length ? "" : `<span class="pill ${p.status === "failed" ? "bad" : p.status === "done" ? "ok" : ""}">${STATUS_TEXT[p.status] || p.status}</span>`}
+        ${Object.keys(CHANNEL_NAMES).map((slug) => {
+          const up = uploads.find((u) => u.channel === slug);
+          return `<button class="mark ${up ? "on" : ""}" title="${up
+            ? `Sudah diupload ke ${CHANNEL_NAMES[slug]} (${escape_(up.at)}) — klik untuk batalkan`
+            : `Tandai sudah diupload ke ${CHANNEL_NAMES[slug]}`}"
+            onclick="event.stopPropagation();toggleUploaded('${p.id}','${slug}',${up ? "true" : "false"})">
+            <img src="api/channels/${slug}/logo" alt="${CHANNEL_NAMES[slug]}"></button>`;
+        }).join("")}
+      </div>
+      <button class="del" title="Hapus proyek" aria-label="Hapus proyek ${escape_(p.name || p.id)}"
+        onclick="event.stopPropagation();deleteProject('${p.id}','${escape_(p.name || p.id).replace(/'/g, "\\'")}')">×</button></div>`;
+  }).join("")
     || `<p class="hint">Belum ada proyek.</p>`;
   $("drawerToggle").textContent = `Proyek (${projects.length})`;
   // Wiping everything is permanent, so the button only exists when there is
@@ -303,6 +324,19 @@ async function loadList() {
        title="${uploaded.length ? "Hapus proyek yang sudah ditandai diupload"
          : "Belum ada proyek yang ditandai sudah diupload"}">
        Hapus proyek yang sudah diupload${uploaded.length ? ` (${uploaded.length})` : ""}</button></div>`);
+}
+
+// Marking lives on the project row: one small channel avatar per channel, lit when
+// this project went up there. The app cannot know by itself -- uploading is manual.
+async function toggleUploaded(id, channel, marked) {
+  try {
+    await api(`api/projects/${id}/uploaded`, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ channel, remove: marked, title: (id === current && uploadForm?.title) || "" }),
+    });
+    await loadList();
+    if (id === current) await refresh();
+  } catch (e) { alert(e.message); }
 }
 
 async function deleteUploadedProjects(count) {
@@ -641,10 +675,11 @@ function draw() {
           <span>${escape_(s.white)} — ${escape_(s.black)}</span>
           <span class="num">${s.plies_total} ply</span>
           ${s.duration ? `<span class="num">${fmtTime(s.duration)}</span>` : ""}
-          <span class="pill ${statusTone(s)}">${statusLabel(s)}</span>
-          ${(s.uploads || []).map((u) => `<span class="pill ok"
+          ${(s.uploads || []).length ? "" : `<span class="pill ${statusTone(s)}">${statusLabel(s)}</span>`}
+          ${(s.uploads || []).map((u) => `<span class="pill up"
             title="Ditandai sudah diupload ${escape_(u.at)}${u.title ? ` — “${escape_(u.title)}”` : ""}">
-            ↑ ${escape_(CHANNEL_NAMES[u.channel] || u.channel)}${u.file === "short.mp4" ? " · Short" : ""}</span>`).join("")}
+            <img class="chlogo" src="api/channels/${u.channel}/logo" alt="">
+            ${escape_(CHANNEL_NAMES[u.channel] || u.channel)}</span>`).join("")}
           ${s.waypoints ? `<span title="${observed} ply terbaca langsung dari papan overlay">
             <span class="num">${done.length}/${s.plies_total}</span> ply berwaktu</span>` : ""}
         </p>
@@ -3179,30 +3214,22 @@ function useSuggestedTitle(index) {
 // A project is "done" once its video is actually on a channel. Marked by hand (the
 // app cannot upload; see the audit note), per channel and file, and that mark is what
 // the sidebar's "hapus yang sudah diupload" goes by.
-function uploadedEntry(s, channel = uploadChannel, file = uploadFile) {
-  return (s.uploads || []).find((u) => u.channel === channel && u.file === file);
-}
-function uploadLabel(u) {
-  const name = uploadTemplates?.[u.channel]?.name || CHANNEL_NAMES[u.channel] || u.channel;
-  return `${name} · ${u.file === "short.mp4" ? "Short" : "video panjang"}`;
+function uploadedEntry(s, channel = uploadChannel) {
+  return (s.uploads || []).find((u) => u.channel === channel);
 }
 function uploadMark(s) {
   const done = uploadedEntry(s);
   return `<div class="row" style="gap:8px;margin-top:14px;align-items:center">
-    ${done ? `<span class="pill ok">Sudah diupload</span>
-      <span class="hint">${escape_(uploadLabel(done))} · ${escape_(done.at)}</span>
+    ${done ? `<span class="pill up"><img class="chlogo" src="api/channels/${done.channel}/logo" alt="">
+        Sudah diupload</span>
+      <span class="hint">${escape_(CHANNEL_NAMES[done.channel] || done.channel)} · ${escape_(done.at)}</span>
       <button class="ghost" onclick="markUploaded(true)">Batalkan tanda</button>`
       : `<button onclick="markUploaded(false)" title="Tandai video ini sudah diunggah ke channel yang dipilih">
            Tandai sudah diupload</button>
          <span class="hint">setelah diunggah lewat YouTube Studio / app</span>`}
   </div>`;
 }
-async function markUploaded(remove) {
-  try {
-    await post("uploaded", { channel: uploadChannel, file: uploadFile, title: uploadForm?.title || "", remove });
-    await refresh(); await loadList();
-  } catch (e) { alert(e.message); }
-}
+async function markUploaded(remove) { await toggleUploaded(current, uploadChannel, remove); }
 
 async function switchUpload(apply) {
   if (uploadDirty) await saveUploadDraft(true);     // never lose typed text on a switch
