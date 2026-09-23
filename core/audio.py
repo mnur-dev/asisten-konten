@@ -200,12 +200,16 @@ def add_music(video, music_path, output, offset=0.0, volume=0.8, fade=0.6):
     from core.video import has_audio, probe
     duration = probe(video)["duration"]
     fade = max(0.05, min(fade, duration / 2))
+    # apad + amix duration=longest, then -t: the click track stops at the last move
+    # while the video holds the closing position for a second or two, so mixing to the
+    # FIRST input's length cut the music short of the end (measured: 39.6s of music
+    # under a 42.8s short). The output is still cut to the video by -t below.
     music_filter = (f"afade=t=in:st=0:d={fade:.3f},"
                     f"afade=t=out:st={max(0.0, duration - fade):.3f}:d={fade:.3f},"
-                    f"volume={volume}")
+                    f"volume={volume},apad")
     if has_audio(video):
         filter_complex = (f"[1:a]{music_filter}[music];"
-                          f"[0:a][music]amix=inputs=2:duration=first:dropout_transition=0:"
+                          f"[0:a][music]amix=inputs=2:duration=longest:dropout_transition=0:"
                           f"normalize=0[mixed];[mixed]alimiter=limit=0.95[a]")
     else:
         filter_complex = f"[1:a]{music_filter}[a]"

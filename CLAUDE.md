@@ -412,6 +412,15 @@ Kalau audit lolos: token Checkmate Theater (`token-piece-invest.json`) sudah ber
 `youtube`; Pawn Initiate masih read-only dan butuh consent ulang dengan scope tulis yang
 tetap membawa scope analytics, supaya `collect.py` di yt-analytics tidak patah.
 
+**Musik latar short harus sampai ujung.** `audio.add_music()` dulu memakai
+`amix=duration=first`, yaitu panjang input pertama = trek klik langkah. Klik berhenti di
+langkah terakhir sementara video masih menahan posisi akhir (ekor), jadi musiknya ikut
+terpotong sebelum video habis — terukur di proyek Dubov: audio 39,6 dtk di bawah short
+42,8 dtk, tiga detik terakhir benar-benar senyap. Sekarang `apad` di rantai musik +
+`amix=duration=longest`, dan panjang akhirnya tetap dipotong `-t` sepanjang video. Terukur
+di uji sintetis (video 12 dtk, klik 5 dtk): audio keluar 12,0 dtk dan detik terakhir masih
+berbunyi. Short yang sudah terlanjur dirender harus dirender ulang untuk ikut diperbaiki.
+
 ## Deploy
 
 `https://yt.sukaweb.my.id/chess-vids/` — **tanpa login**, pilihan pengguna, walau
