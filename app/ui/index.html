@@ -163,9 +163,11 @@
                  flex-direction: column; gap: 9px; background: var(--panel-2); }
   .suggest { margin: 0 0 14px; padding: 10px 12px; border: 1px dashed var(--line-strong); border-radius: 7px; }
   .suggest-list { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 6px; }
-  .suggest-list button { width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto;
-                         gap: 2px 10px; padding: 8px 10px; border-color: var(--line); }
-  .suggest-list button:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  .suggest-list li { display: grid; grid-template-columns: 1fr auto; gap: 6px; align-items: start; }
+  .suggest-list .pick { width: 100%; text-align: left; display: grid; grid-template-columns: 1fr auto;
+                        gap: 2px 10px; padding: 8px 10px; border-color: var(--line); }
+  .suggest-list .pick:hover:not(:disabled) { border-color: var(--accent); background: var(--accent-soft); }
+  .suggest-list .copy { padding: 8px 10px; font-size: 12px; white-space: nowrap; }
   .suggest-list .t { font-weight: 600; }
   .suggest-list .len { color: var(--faint); align-self: start; }
   .suggest-list .a { grid-column: 1 / -1; color: var(--muted); font-size: 12px; font-weight: 400; }
@@ -522,6 +524,25 @@ async function prepareStep(n) {
     }
   }
   if (n === 3 || n === 6) draw();
+  if (n === 6) autoSuggestTitles();          // runs on its own; draw() follows it
+}
+
+// Arriving at step 6 asks Claude for the titles without waiting to be told: the
+// thumbnail text is written against the chosen title, so the ~20 s call is on the
+// critical path either way. Once per project + channel + file, never when something
+// is already stored, and never again after a failure -- that is what the button is
+// for, and a silent retry loop would spend a Claude call per redraw.
+const autoTitled = new Set();
+
+async function autoSuggestTitles() {
+  if (!state || state.busy || titleBusy) return;
+  if (!uploadTemplates || !uploadFiles(state).length) return;
+  if (!TITLE_PATTERN_CHANNELS.includes(uploadChannel)) return;
+  const kind = uploadFile === "short.mp4" ? "short" : "long";
+  const key = `${current}:${uploadChannel}:${kind}`;
+  if ((state.title_suggestions || {})[`${uploadChannel}:${kind}`] || autoTitled.has(key)) return;
+  autoTitled.add(key);
+  await suggestTitles();
 }
 
 async function setStep(n) {
@@ -3326,10 +3347,13 @@ function titleSuggestBox(s) {
     </div>
     ${titleError ? `<p class="err" style="margin:6px 0 0">${escape_(titleError)}</p>` : ""}
     ${stored ? `<ol class="suggest-list">${stored.titles.map((t, i) => `
-      <li><button class="ghost" onclick="useSuggestedTitle(${i})" title="Pakai judul ini">
+      <li><button class="ghost pick" onclick="useSuggestedTitle(${i})" title="Pakai judul ini">
         <span class="t">${escape_(t.title)}</span><span class="num len">${[...t.title].length}</span>
-        <span class="a">${escape_(t.angle)}</span></button></li>`).join("")}</ol>
-      <p class="hint" style="margin:4px 0 0">Klik untuk memakai · dibuat ${escape_(stored.created)}</p>` : ""}
+        <span class="a">${escape_(t.angle)}</span></button>
+        <button class="copy" onclick="copySuggestedTitle(${i}, this)"
+                title="Salin judul ini ke clipboard">Salin</button></li>`).join("")}</ol>
+      <p class="hint" style="margin:4px 0 0">Klik judulnya untuk dipakai, atau Salin · dibuat ${
+        escape_(stored.created)}</p>` : ""}
   </div>`;
 }
 
@@ -3374,6 +3398,7 @@ async function markUploaded(remove) { await toggleUploaded(current, uploadChanne
 async function switchUpload(apply) {
   if (uploadDirty) await saveUploadDraft(true);     // never lose typed text on a switch
   apply(); uploadFormKey = null; draw();
+  autoSuggestTitles();     // a switch lands on an empty suggestion list; fill that too
 }
 function setUploadChannel(slug) { switchUpload(() => { uploadChannel = slug; }); }
 function setUploadFile(file) { switchUpload(() => { uploadFile = file; }); }
@@ -3410,9 +3435,27 @@ async function saveUploadTemplate(button) {
 
 async function copyUpload(field, button) {
   const text = field === "tags" ? tagList(uploadForm.tags).join(", ") : uploadForm[field];
-  try { await navigator.clipboard.writeText(text); }
-  catch (e) {                                   // older browsers / non-secure context
-    const box = $(`up-${field}`); box.select(); document.execCommand("copy");
+  await copyText(text, button, $(`up-${field}`));
+}
+
+function copySuggestedTitle(index, button) {
+  const kind = uploadFile === "short.mp4" ? "short" : "long";
+  return copyText(state.title_suggestions[`${uploadChannel}:${kind}`].titles[index].title, button);
+}
+
+// `fallback` is an input/textarea holding the same text, used where the clipboard API
+// isn't available (older browsers, and any non-HTTPS context). Without one -- the
+// suggestions aren't in a field -- a temporary textarea stands in.
+async function copyText(text, button, fallback) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (e) {
+    const box = fallback || document.body.appendChild(
+      Object.assign(document.createElement("textarea"),
+                    { value: text, style: "position:fixed;opacity:0" }));
+    box.select();
+    document.execCommand("copy");
+    if (!fallback) box.remove();
   }
   const old = button.textContent;
   button.textContent = "Tersalin ✓";

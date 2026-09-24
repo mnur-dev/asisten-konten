@@ -388,6 +388,19 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Saran judul jalan sendiri, dan tiap judul punya tombol Salin.** Masuk ke langkah 6
+(atau berpindah channel/file di kartu Judul) langsung memanggil `suggestTitles()`
+tanpa menunggu tombol — panggilan Claude ~20 dtk itu toh ada di jalur kritis, karena
+teks thumbnail ditulis melawan judul yang dipilih. `autoSuggestTitles()` menjaga
+supaya itu **sekali saja** per proyek+channel+file (`autoTitled`), tidak jalan kalau
+sudah ada hasil tersimpan, tidak jalan saat proyek sibuk, dan **tidak mengulang
+sesudah gagal** — kalau diulang tiap redraw, satu kegagalan jadi panggilan Claude
+beruntun; tombolnya yang dipakai untuk mencoba lagi. Terverifikasi di production: ada
+hasil → 0 panggilan, ganti ke Short → 1, masuk lagi → 0, sesudah gagal → 0. Tombol
+Salin per judul memakai `copyText()` yang sama dengan kolom-kolom paket upload, dengan
+textarea sementara sebagai cadangan kalau clipboard API tidak tersedia (judulnya tidak
+duduk di dalam field mana pun).
+
 **Langkah 6 urutannya Judul → Thumbnail → Paket upload.** `titleCard()` berdiri
 sendiri di atas: pemilih channel + file, kolom judul, dan 5 saran judul Claude.
 Alasannya berantai — teks thumbnail ditulis untuk **melengkapi judul yang dipilih**
