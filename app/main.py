@@ -129,6 +129,7 @@ class NewProject(BaseModel):
     name: str = ""
     video_url: str
     pgn_text: str
+    channel: str = "pawn-initiate"      # which channel this video is for
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -162,6 +163,7 @@ def create(data: NewProject):
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 
+    channel = data.channel if data.channel in UPLOAD_CHANNELS else next(iter(UPLOAD_CHANNELS))
     project_id = uuid.uuid4().hex[:12]
     path = PROJECTS / project_id
     path.mkdir()
@@ -188,7 +190,11 @@ def create(data: NewProject):
         "flip_board": False,
         "short_music": audio.default_music(),
         "short_music_offset": 0.0,
+        # asked for first, before anything is rendered: the channel's logo is burnt
+        # INTO the long video, so learning the target late means rendering again
+        "channel": channel,
     })
+    install_brand_preset(path, channel)
 
     def work(path: Path):
         prepare_video(path, video, url, data.pgn_text, timeline)
@@ -385,6 +391,8 @@ def status(project_id: str):
     meta.setdefault("paste_rect", None)
     meta.setdefault("brand_file", None)
     meta.setdefault("brand_rect", None)
+    meta.setdefault("brand_preset", None)
+    meta.setdefault("channel", None)          # projects made before the target was asked for
     meta["brand_presets"] = brand_presets()
     meta.setdefault("download_progress", None)
     meta.setdefault("source_zoom", None)
@@ -688,7 +696,7 @@ async def upload_brand(project_id: str, file: UploadFile = File(...)):
     except Exception:
         target.unlink(missing_ok=True)
         raise HTTPException(400, "That file is not a readable image")
-    update(path, brand_file=target.name)
+    update(path, brand_file=target.name, brand_preset=None)
     return {"brand_file": target.name}
 
 
@@ -714,20 +722,65 @@ def brand_preset_image(slug: str):
                         headers={"Cache-Control": "public, max-age=86400"})
 
 
-@app.post("/api/projects/{project_id}/brand/preset")
-def use_brand_preset(project_id: str, slug: str = Body(..., embed=True)):
-    """Copy one of the ready-made channel plates in as this project's logo, so the
-    common case needs no upload at all. Copied rather than referenced: a project
-    keeps rendering the logo it was built with even if the avatar is replaced."""
+def install_brand_preset(path: Path, slug: str) -> str | None:
+    """Copy a ready-made channel plate in as this project's logo; None when that
+    channel has no plate. Copied rather than referenced: a project keeps rendering
+    the logo it was built with even if the avatar is replaced later. `brand_preset`
+    remembers which channel it came from, which is what lets a change of target
+    channel swap the logo without touching a logo the user uploaded themselves."""
     art = BRAND_PRESETS / f"{Path(slug).name}.png"
     if slug not in UPLOAD_CHANNELS or not art.is_file():
-        raise HTTPException(404, "No preset logo")
-    path = folder(project_id)
+        return None
     for stale in path.glob("brand.*"):
         stale.unlink()
     shutil.copyfile(art, path / "brand.png")
-    update(path, brand_file="brand.png")
+    update(path, brand_file="brand.png", brand_preset=slug)
+    return "brand.png"
+
+
+@app.post("/api/projects/{project_id}/brand/preset")
+def use_brand_preset(project_id: str, slug: str = Body(..., embed=True)):
+    """Pick a channel plate by hand, without changing where the video is headed."""
+    if not install_brand_preset(folder(project_id), slug):
+        raise HTTPException(404, "No preset logo")
     return {"brand_file": "brand.png"}
+
+
+def brand_preset_of(path: Path, meta: dict) -> str | None:
+    """Which channel plate this project's logo is -- by record, or by comparing the
+    bytes. The content check backfills projects whose plate was installed before
+    `brand_preset` was recorded; without it, changing the target channel would leave
+    the old channel's logo sitting there and say nothing about it."""
+    if slug := meta.get("brand_preset"):
+        return slug
+    name = meta.get("brand_file")
+    logo = path / name if name else None
+    if not (logo and logo.is_file()):
+        return None
+    blob = logo.read_bytes()
+    for slug in UPLOAD_CHANNELS:
+        art = BRAND_PRESETS / f"{slug}.png"
+        if art.is_file() and art.stat().st_size == len(blob) and art.read_bytes() == blob:
+            return slug
+    return None
+
+
+@app.post("/api/projects/{project_id}/channel")
+def set_channel(project_id: str, slug: str = Body(..., embed=True)):
+    """Which channel this project is for -- the publish step opens on it, the title
+    suggestions follow its patterns, and its logo is the one rendered into the video.
+
+    The logo follows the channel unless the user uploaded their own (`brand_preset`
+    empty with a logo present), which is theirs to keep. Says whether it swapped, so
+    the UI can warn that an already-rendered video still carries the old logo."""
+    if slug not in UPLOAD_CHANNELS:
+        raise HTTPException(404, "Unknown channel")
+    path = folder(project_id)
+    meta = read_meta(path)
+    update(path, channel=slug)
+    swapped = (not meta.get("brand_file") or brand_preset_of(path, meta)) and \
+        bool(install_brand_preset(path, slug))
+    return {"channel": slug, "logo_swapped": swapped}
 
 
 @app.delete("/api/projects/{project_id}/brand", status_code=204)
@@ -735,7 +788,7 @@ def delete_brand(project_id: str):
     path = folder(project_id)
     for stale in path.glob("brand.*"):
         stale.unlink()
-    update(path, brand_file=None, brand_rect=None)
+    update(path, brand_file=None, brand_rect=None, brand_preset=None)
     return Response(status_code=204)
 
 

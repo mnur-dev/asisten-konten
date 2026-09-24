@@ -388,6 +388,20 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Channel tujuan dipilih di form proyek baru, bukan di akhir.** `meta["channel"]`
+(`POST /api/projects` menerimanya; `POST /api/projects/{id}/channel` mengubahnya)
+menentukan tiga hal sekaligus: logo mana yang **ditempel ke video panjang**, channel
+mana yang terbuka di langkah 6, dan pola judul siapa yang dipakai Claude. Ditanyakan
+di awal justru karena yang pertama: logonya ikut terbakar di render, jadi tahu tujuan
+belakangan = render ulang. Saat proyek dibuat, plat channel langsung dipasang
+(`install_brand_preset()`, mencatat `brand_preset`); mengganti channel ikut mengganti
+logo **kecuali** penggunanya mengunggah logo sendiri (`brand_file` ada tanpa
+`brand_preset`). `brand_preset_of()` menambal proyek lama dengan membandingkan isi
+file logonya dengan plat yang ada, supaya pergantian channel tidak diam-diam
+meninggalkan logo channel lama. Kalau `full-video.mp4` sudah ada, UI bertanya dulu dan
+menegaskan video lama tetap memakai logo lama. Proyek yang dibuat sebelum ini ada
+`channel`-nya `null` dan header-nya menampilkan "pilih channel…".
+
 **Logo 16:9, dan kotak logo tanpa gambar itu diam-diam kosong.** `furniture_layer()`
 menggambar logo dengan **rasio aslinya** dan ditaruh di tengah kotak, jadi avatar
 channel yang 1:1 hanya mengisi sepertiga tengah kotak lebar yang biasa ditarik di

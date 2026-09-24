@@ -80,6 +80,18 @@
   .pill.up { color: var(--mark); border-color: var(--mark); background: var(--mark-soft); gap: 5px; }
   .pill.up::before { display: none; }
   .chlogo { width: 15px; height: 15px; border-radius: 50%; object-fit: cover; }
+  /* target channel: a chip you can change, not a status -- so no status dot */
+  .chan { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line);
+          border-radius: 99px; padding: 2px 9px 2px 7px; }
+  .chan select { width: auto; background: transparent; border: 0; padding: 0; color: var(--ink);
+                 font: inherit; font-size: 12px; font-weight: 600; }
+  .chanbtn { display: inline-flex; align-items: center; gap: 7px; }
+  .chanbtn.on { border-color: var(--accent); color: var(--accent); }
+  .chanbtn img { width: 20px; height: 20px; border-radius: 50%; object-fit: cover; }
+  /* one-line confirmation for changes that happen without a page of their own */
+  .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 50;
+           background: var(--panel-2); border: 1px solid var(--line-strong); border-radius: 99px;
+           padding: 8px 16px; font-size: 13px; box-shadow: 0 6px 20px #0008; max-width: 92vw; }
   .proj:hover { background: var(--panel); }
   .proj.on { background: var(--panel-2); box-shadow: inset 2px 0 0 var(--accent); }
   .proj b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -400,6 +412,16 @@ function showNew() {
       <input id="nm" placeholder="Carlsen vs Gao">
       <label>PGN</label>
       <textarea id="pg" placeholder="[Event ...]&#10;1. e4 c5 ..."></textarea>
+      <label>Channel tujuan</label>
+      <div class="row" id="newchan">
+        ${Object.entries(CHANNEL_NAMES).map(([slug, name]) => `
+          <button class="chanbtn ${slug === newChannel ? "on" : ""}" data-slug="${slug}"
+                  onclick="pickNewChannel('${slug}')">
+            <img src="api/channels/${slug}/logo" alt="">${name}</button>`).join("")}
+      </div>
+      <p class="hint" style="margin:6px 0 0">Logo channel ini yang ditempel ke video panjang, jadi
+        pilih sekarang — menggantinya setelah render berarti render ulang. Langkah Terbitkan juga
+        terbuka di channel ini.</p>
       <div class="row" style="margin-top:14px">
         <button class="primary" onclick="create()">Buat proyek</button>
         <span id="msg" class="err"></span>
@@ -407,12 +429,22 @@ function showNew() {
     </div>`;
 }
 
+// Chosen on the new-project form; the row is re-styled in place so typing isn't lost.
+let newChannel = "pawn-initiate";
+
+function pickNewChannel(slug) {
+  newChannel = slug;
+  document.querySelectorAll("#newchan .chanbtn").forEach(
+    (b) => b.classList.toggle("on", b.dataset.slug === slug));
+}
+
 async function create() {
   $("msg").textContent = "";
   try {
     const { id } = await api("api/projects", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ video_url: $("vp").value, name: $("nm").value, pgn_text: $("pg").value }),
+      body: JSON.stringify({ video_url: $("vp").value, name: $("nm").value, pgn_text: $("pg").value,
+                             channel: newChannel }),
     });
     await loadList(); open_(id);
   } catch (e) { $("msg").textContent = e.message; }
@@ -426,7 +458,10 @@ async function open_(id) {
   clearInterval(spRafId); spWindowsKey = null; spLoopActive = false;
   spTime = null; spPlaying = false; spWindows = []; spFramePlies = null; spScrubbing = false;
   spTextKey = null; shortOptsFor = null; stepFor = null;
-  clearInterval(timer); await refresh(); loadList();
+  clearInterval(timer); await refresh();
+  // the publish step, the title patterns and the logo all follow the project's target
+  if (state?.channel) uploadChannel = state.channel;
+  loadList();
   timer = setInterval(() => { if (state?.busy) refresh(); }, 1500);
 }
 
@@ -694,6 +729,7 @@ function draw() {
           <span>${escape_(s.white)} — ${escape_(s.black)}</span>
           <span class="num">${s.plies_total} ply</span>
           ${s.duration ? `<span class="num">${fmtTime(s.duration)}</span>` : ""}
+          ${channelChip(s)}
           ${(s.uploads || []).length ? "" : `<span class="pill ${statusTone(s)}">${statusLabel(s)}</span>`}
           ${(s.uploads || []).map((u) => `<span class="pill up"
             title="Ditandai sudah diupload ${escape_(u.at)}${u.title ? ` — “${escape_(u.title)}”` : ""}">
@@ -1264,7 +1300,9 @@ function brandUpload(s) {
   // it -- so the one combination that silently does nothing is called out here
   const missing = s.brand_rect && !s.brand_file;
   return `<div class="row" style="margin-top:12px;align-items:center">
-    ${presets ? `<span class="hint">logo channel:</span>${presets}` : ""}
+    ${presets ? `<span class="hint">${s.brand_preset
+        ? `logo ${escape_(CHANNEL_NAMES[s.brand_preset] || s.brand_preset)} (ikut channel tujuan)`
+        : "logo channel:"}</span>${presets}` : ""}
     <input type="file" id="brandfile" accept="image/png,image/jpeg,image/webp"
            onchange="uploadBrand()" style="font-size:12px">
     ${s.brand_file ? `<img src="api/projects/${current}/file/${s.brand_file}?_=${lookStamp}"
@@ -3208,6 +3246,55 @@ function uploadCard(s) {
 const TITLE_PATTERN_CHANNELS = ["pawn-initiate"];
 // Names for the badges, which are drawn before the upload card has loaded its templates.
 const CHANNEL_NAMES = { "pawn-initiate": "Pawn Initiate", "checkmate-theater": "Checkmate Theater" };
+
+// The project's target channel. It decides three things at once -- the logo rendered
+// into the long video, which channel the publish step opens on, and whose title
+// patterns Claude writes against -- which is why it is asked for on the new-project
+// form rather than at the end. Projects made before it existed have none, and say so.
+let toastTimer = null;
+
+function flash(text) {
+  let el = document.querySelector(".toast");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "toast";
+    el.setAttribute("role", "status");
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.remove(), 4000);
+}
+
+function channelChip(s) {
+  const ch = s.channel || "";
+  return `<span class="chan" title="Channel tujuan — logo yang dirender ikut pilihan ini">
+    ${ch ? `<img class="chlogo" src="api/channels/${ch}/logo" alt="">` : ""}
+    <select aria-label="Channel tujuan" onchange="setProjectChannel(this.value)">
+      ${ch ? "" : `<option value="" selected>pilih channel…</option>`}
+      ${Object.entries(CHANNEL_NAMES).map(([slug, name]) =>
+        `<option value="${slug}" ${slug === ch ? "selected" : ""}>${name}</option>`).join("")}
+    </select></span>`;
+}
+
+async function setProjectChannel(slug) {
+  if (!slug) return;
+  // the logo is already inside a rendered video; swapping it now changes only what a
+  // FUTURE render would carry, so say so instead of letting the two quietly disagree
+  const rendered = (state.outputs || []).includes("full-video.mp4");
+  if (rendered && !confirm(`Ganti channel tujuan ke ${CHANNEL_NAMES[slug]}?\n\n`
+      + "full-video.mp4 yang sudah ada tetap memakai logo lama — render ulang kalau logonya harus ikut.")) {
+    draw();
+    return;
+  }
+  try {
+    const { logo_swapped } = await post("channel", { slug });
+    uploadChannel = slug;
+    await refresh();
+    loadList();
+    if (logo_swapped) flash(`Channel tujuan: ${CHANNEL_NAMES[slug]} — logo proyek ikut diganti.`);
+  } catch (e) { alert(e.message); }
+}
 let titleBusy = false, titleError = "";
 
 function titleSuggestBox(s) {
