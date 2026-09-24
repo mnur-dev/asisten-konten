@@ -394,6 +394,9 @@ def status(project_id: str):
     meta.setdefault("brand_preset", None)
     meta.setdefault("channel", None)          # projects made before the target was asked for
     meta["brand_presets"] = brand_presets()
+    # which channels can get title suggestions -- kept here so the UI can't drift from
+    # what core/titles.py actually has patterns for (its own, or a channel's it borrows)
+    meta["title_channels"] = titles.pattern_channels()
     meta.setdefault("download_progress", None)
     meta.setdefault("source_zoom", None)
     meta.setdefault("name_rects", {"white": None, "black": None})
@@ -1412,7 +1415,7 @@ def title_suggestions(project_id: str, body: TitleRequest):
         raise HTTPException(400, "kind must be long or short")
     path = folder(project_id)
     meta = read_meta(path)
-    if not (titles.PATTERNS / f"{body.channel}.md").is_file():
+    if body.channel not in titles.pattern_channels():
         raise HTTPException(400, f"Belum ada pola judul untuk channel {body.channel}")
     if not meta.get("source_title") and meta.get("video_url"):
         info = source_info(meta["video_url"])

@@ -388,6 +388,18 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Checkmate Theater meminjam data judul Pawn Initiate.** `PATTERN_SOURCE` di
+`core/titles.py` memetakan channel yang belum punya riwayat judul ke channel yang
+punya. Checkmate Theater baru jadi channel catur Sep 2026, jadi tidak ada judul
+miliknya sendiri untuk diukur — dan menebak pola untuknya adalah bukti yang lebih
+lemah daripada 1.353 video terukur Pawn Initiate. Prompt-nya **menyebutkan asal
+datanya** supaya Claude tidak menulis seolah itu hasil channel ini sendiri, dan
+daftar "jangan diulang" tetap dipakai karena kedua channel memuat pertandingan yang
+sama. Channel mana yang bisa dapat saran ditentukan `pattern_channels()` dan dikirim
+lewat status (`title_channels`); UI membacanya, tidak menyimpan daftar sendiri.
+Terverifikasi di production: 5 judul Checkmate Theater dalam 20 dtk, tidak ada yang
+menyalin judul Pawn Initiate.
+
 **Saran judul jalan sendiri, dan tiap judul punya tombol Salin.** Masuk ke langkah 6
 (atau berpindah channel/file di kartu Judul) langsung memanggil `suggestTitles()`
 tanpa menunggu tombol — panggilan Claude ~20 dtk itu toh ada di jalur kritis, karena

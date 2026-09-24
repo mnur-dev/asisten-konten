@@ -107,11 +107,35 @@ def pgn_facts(folder: Path, meta: dict) -> str:
     return "\n".join(lines)
 
 
+# A channel with no measured history of its own borrows one. Checkmate Theater was
+# only rebranded into a chess channel in Sep 2026: it publishes the same games to the
+# same audience, but has no title record to measure, and inventing patterns for it
+# would be worse evidence than Pawn Initiate's 1,353 measured videos. The prompt says
+# where the patterns came from, so Claude doesn't write as if they were this
+# channel's own results.
+PATTERN_SOURCE = {"checkmate-theater": "pawn-initiate"}
+
+
+def pattern_channels() -> list[str]:
+    """Channels that can get suggestions -- their own patterns, or borrowed ones."""
+    own = {f.stem for f in PATTERNS.glob("*.md")}
+    return sorted(own | {slug for slug, source in PATTERN_SOURCE.items() if source in own})
+
+
 def channel_patterns(slug: str, kind: str) -> str:
     """The written pattern guide plus real titles: the best of this kind (what works)
     and the most recent ones (what must not be repeated)."""
-    guide = (PATTERNS / f"{slug}.md").read_text(encoding="utf-8")
-    corpus = json.loads((PATTERNS / f"{slug}.json").read_text(encoding="utf-8"))["videos"]
+    source = PATTERN_SOURCE.get(slug, slug)
+    guide = (PATTERNS / f"{source}.md").read_text(encoding="utf-8")
+    if source != slug:
+        guide = (f"NOTE: {slug.replace('-', ' ').title()} is a new chess channel with no "
+                 f"measured title history of its own. What follows is measured on "
+                 f"{source.replace('-', ' ').title()}, a sister chess channel with the same "
+                 f"kind of audience -- treat it as the best available evidence, not as this "
+                 f"channel's own results. The recent titles below belong to that sister "
+                 f"channel; do not repeat them either, the two channels post the same games.\n\n"
+                 + guide)
+    corpus = json.loads((PATTERNS / f"{source}.json").read_text(encoding="utf-8"))["videos"]
     same = [v for v in corpus if (v["seconds"] <= SHORT_MAX) == (kind == "short")]
     best = sorted(same, key=lambda v: -v["views"])[:25]
     recent = sorted(corpus, key=lambda v: v["published"], reverse=True)[:40]
