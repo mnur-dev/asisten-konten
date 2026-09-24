@@ -385,6 +385,7 @@ def status(project_id: str):
     meta.setdefault("paste_rect", None)
     meta.setdefault("brand_file", None)
     meta.setdefault("brand_rect", None)
+    meta["brand_presets"] = brand_presets()
     meta.setdefault("download_progress", None)
     meta.setdefault("source_zoom", None)
     meta.setdefault("name_rects", {"white": None, "black": None})
@@ -689,6 +690,44 @@ async def upload_brand(project_id: str, file: UploadFile = File(...)):
         raise HTTPException(400, "That file is not a readable image")
     update(path, brand_file=target.name)
     return {"brand_file": target.name}
+
+
+BRAND_PRESETS = ROOT / "assets" / "brand"
+
+
+def brand_presets() -> list[dict]:
+    """The ready-made logo plates in assets/brand, built from the channel avatars by
+    tools/buat_logo_16x9.py. They exist because the avatars are square: dropped into
+    the wide box someone draws over the broadcast, a 1:1 logo fills only its middle,
+    so each one is padded out to 16:9 with its own background."""
+    return [{"slug": slug, "name": name}
+            for slug, name in UPLOAD_CHANNELS.items()
+            if (BRAND_PRESETS / f"{slug}.png").is_file()]
+
+
+@app.get("/api/brand-presets/{slug}/image")
+def brand_preset_image(slug: str):
+    art = BRAND_PRESETS / f"{Path(slug).name}.png"
+    if slug not in UPLOAD_CHANNELS or not art.is_file():
+        raise HTTPException(404, "No preset logo")
+    return FileResponse(art, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+
+@app.post("/api/projects/{project_id}/brand/preset")
+def use_brand_preset(project_id: str, slug: str = Body(..., embed=True)):
+    """Copy one of the ready-made channel plates in as this project's logo, so the
+    common case needs no upload at all. Copied rather than referenced: a project
+    keeps rendering the logo it was built with even if the avatar is replaced."""
+    art = BRAND_PRESETS / f"{Path(slug).name}.png"
+    if slug not in UPLOAD_CHANNELS or not art.is_file():
+        raise HTTPException(404, "No preset logo")
+    path = folder(project_id)
+    for stale in path.glob("brand.*"):
+        stale.unlink()
+    shutil.copyfile(art, path / "brand.png")
+    update(path, brand_file="brand.png")
+    return {"brand_file": "brand.png"}
 
 
 @app.delete("/api/projects/{project_id}/brand", status_code=204)

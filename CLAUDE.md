@@ -113,7 +113,8 @@ redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB pe
      daripada tinggi.
    - `logo_rects` — dihapus dengan `delogo` (interpolasi piksel sekitar, bukan AI)
    - `blur_rects` — disamarkan dengan `boxblur`
-   - `brand_file` + `brand_rect` — logo milik pengguna yang diunggah, ditempel
+   - `brand_file` + `brand_rect` — logo yang ditempel: unggahan sendiri, atau salah
+     satu plat siap pakai (lihat catatan "Logo 16:9" di bawah)
    - `name_rects` — papan nama pemain putih/hitam, teks dari PGN
    Frame contohnya dipilih lewat scrubber yang sama dengan picker frame thumbnail
    (`wireScrubber()`): slider sepanjang video + tombol putar. Selama diputar/digeser
@@ -365,6 +366,22 @@ menambah satu frame pun ke rencana concat. Papan jam digambar `render.draw_clock
 strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(clocks=True)`
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
+
+**Logo 16:9, dan kotak logo tanpa gambar itu diam-diam kosong.** `furniture_layer()`
+menggambar logo dengan **rasio aslinya** dan ditaruh di tengah kotak, jadi avatar
+channel yang 1:1 hanya mengisi sepertiga tengah kotak lebar yang biasa ditarik di
+pojok (contoh nyata: kotak 311×120, rasio 2,6). Karena itu `tools/buat_logo_16x9.py`
+melebarkan tiap avatar di `app/ui/channels/` jadi 1422×800 dan menyimpannya di
+`assets/brand/<slug>.png`: latarnya **dilanjutkan dari avatar itu sendiri** — warna
+rata kalau bingkainya satu warna (Checkmate Theater `#2b2929`), papan catur yang
+diteruskan sefase kalau bingkainya kotak-kotak (Pawn Initiate, sel 100 px,
+`#963900`/hitam) — sehingga sambungannya tidak kelihatan. Plat itu dipakai lewat
+`POST /api/projects/{id}/brand/preset` (disalin ke proyek, bukan dirujuk, supaya
+proyek lama tetap merender logo yang dipakai saat itu). Yang **tidak pernah kelihatan
+salah sebelumnya**: `brand_rect` terisi tapi `brand_file` kosong — render tidak
+menggambar apa pun dan tidak mengeluh sama sekali; sekarang kartu logo di langkah
+Tata letak memberi peringatan kuning untuk kombinasi itu. Short tidak memakai logo
+ini sama sekali (`short_clip()` cuma papan + caption).
 
 **Caption short: Noto Sans Black + glow sewarna teks.** `core/render.short_text_layer()`
 memakai `find_short_font()` → `assets/fonts/NotoSans-Black.ttf` yang **ikut di repo**

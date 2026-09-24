@@ -861,7 +861,7 @@ const LAYERS = {
   },
   brand: {
     label: "Logo saya", colour: "#c9a227", multi: false,
-    hint: "Tarik kotak tempat logomu ditempel. Logo menjaga rasio aslinya dan diletakkan di tengah kotak. Upload gambarnya di bawah (PNG transparan paling bagus).",
+    hint: "Tarik kotak tempat logomu ditempel, lalu pilih logo channel di bawah atau unggah gambar sendiri (PNG transparan paling bagus). Logo menjaga rasio aslinya dan diletakkan di tengah kotak, jadi kotak yang rasionya jauh berbeda akan menyisakan ruang kosong — logo channel yang tersedia sudah dilebarkan ke 16:9.",
     get: (s) => (s.brand_rect ? [s.brand_rect] : []),
     save: (rects) => post("brand-rect", { rect: rects[0] || null }),
   },
@@ -1237,14 +1237,33 @@ function drawGhosts() {
 }
 
 function brandUpload(s) {
+  const presets = (s.brand_presets || []).map((p) => `<button onclick="useBrandPreset('${p.slug}')"
+      title="Pakai logo ${p.name} (sudah dilebarkan ke rasio 16:9)" style="padding:3px 6px">
+      <img src="api/brand-presets/${p.slug}/image" alt="${p.name}"
+           style="height:22px;border-radius:3px;display:block"></button>`).join("");
+  // a box without an image renders nothing at all, and the render says nothing about
+  // it -- so the one combination that silently does nothing is called out here
+  const missing = s.brand_rect && !s.brand_file;
   return `<div class="row" style="margin-top:12px;align-items:center">
+    ${presets ? `<span class="hint">logo channel:</span>${presets}` : ""}
     <input type="file" id="brandfile" accept="image/png,image/jpeg,image/webp"
            onchange="uploadBrand()" style="font-size:12px">
     ${s.brand_file ? `<img src="api/projects/${current}/file/${s.brand_file}?_=${lookStamp}"
         style="height:34px;border-radius:4px;background:#0003;padding:3px">
       <button onclick="removeBrand()">Hapus logo</button>`
-      : `<span class="hint">belum ada logo diunggah</span>`}
+      : `<span class="hint${missing ? " warn-text" : ""}">${
+          missing ? "kotak logo sudah ada tapi gambarnya belum — pilih logo channel atau unggah, kalau tidak kotaknya tidak menempel apa pun"
+                  : "belum ada logo diunggah"}</span>`}
   </div>`;
+}
+
+async function useBrandPreset(slug) {
+  await api(`api/projects/${current}/brand/preset`, {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ slug }),
+  });
+  lookStamp = Date.now();
+  refresh();
 }
 
 async function uploadBrand() {
