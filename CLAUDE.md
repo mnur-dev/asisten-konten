@@ -41,6 +41,21 @@ pojok kanan; log dilipat (`<details>`, terbuka saat busy/gagal). Di HP daftar pr
 laci (tombol "Proyek (n)", `toggleDrawer()`). Satu tampilan gelap yang disengaja; huruf
 Figtree (UI) + JetBrains Mono (angka/log).
 
+**Warna diambil dari dua logo channel.** Token di `:root` (satu-satunya tempat warna
+dasar didefinisikan): arang hangat `#13100e`/`#1b1714` dari latar Checkmate Theater,
+aksen amber `--accent: #f2a44e` dari huruf logonya, dan oranye bakar Pawn Initiate
+`--ember: #963900` (hanya untuk isian/garis, terlalu gelap untuk teks — satu-satunya
+pemakaian: gradien bar progres yang berakhir di amber). Netralnya sengaja dibuat
+berbias hangat, bukan abu-abu slate seperti sebelumnya, supaya aksennya tidak
+kelihatan menempel dari keluarga warna lain. Peran warna dipisah dan tidak boleh
+digabung: **amber = tempat aplikasi menunggu tindakanmu** (tombol utama, langkah
+aktif, fokus), **hijau `--ok: #9ab36a` = selesai dirender**, **`--mark: #e2701d` =
+sudah diupload**, sisanya status biasa (info biru, `--warn` kuning, `--bad` merah).
+Rasio kontras terukur di atas ground gelap: ink 15,8 · muted 6,1 · amber 8,7 · hijau
+7,7 · mark 5,6 — semuanya lewat 4,5. Warna kotak layer di atas video (Zoom, Blur,
+Logo saya, dst.) **tidak** ikut skema ini: fungsinya membedakan kotak satu sama lain
+di atas siaran berwarna-warni, bukan mengikuti merek.
+
 **Preview hasil jadi di langkah 5, tanpa render.** `finalPreviewCard()` menampilkan 5 frame
 video panjang: satu detik acak di tiap seperlima jendela mulai–selesai ("Acak lagi" untuk
 ganti). Tiap frame dari `GET /final-frame?t=` → `board_image()` untuk ply yang tampil di
@@ -62,10 +77,10 @@ panjang selalu mulai paling lambat di langkah 1 dan selalu lewat langkah terakhi
 
 **Penanda upload ada di daftar proyek.** Tiap baris proyek punya satu avatar channel per
 channel (`GET /api/channels/{slug}/logo` — avatar YouTube diunduh ke `app/ui/channels/`);
-abu-abu = belum, berwarna + cincin ungu = sudah. Klik untuk menandai/membatalkan
+abu-abu = belum, berwarna + cincin oranye = sudah. Klik untuk menandai/membatalkan
 (`POST /uploaded`, satu entri per channel: `{channel, title, at}` di `meta["uploads"]`).
 Proyek yang sudah ditandai **tidak lagi** menampilkan pill status "selesai" — tanda upload
-menggantikannya, dan warnanya sengaja beda (`--mark` ungu vs `--accent` hijau) supaya
+menggantikannya, dan warnanya sengaja beda (`--mark` oranye vs `--ok` hijau) supaya
 "selesai dirender" tidak tertukar dengan "sudah tayang". Tombol sidebar
 **"Hapus proyek yang sudah diupload"** (`DELETE /api/projects?only=uploaded`; `only=all`
 masih ada) mati kalau belum ada yang ditandai. Entri lama yang masih membawa kunci `file`
