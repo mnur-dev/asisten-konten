@@ -12,7 +12,7 @@ import tempfile
 from pathlib import Path
 
 import chess
-from PIL import Image, ImageColor, ImageDraw, ImageFont
+from PIL import Image, ImageColor, ImageDraw, ImageFilter, ImageFont
 
 from core import pgn
 from core.video import probe
@@ -124,6 +124,22 @@ def find_text_font():
     return find_font()
 
 
+FONTS_DIR = Path(__file__).resolve().parent.parent / "assets" / "fonts"
+
+
+def find_short_font():
+    """The face the short captions are set in: Noto Sans Black, bundled in
+    assets/fonts so every machine renders the same weight.
+
+    Shipped with the repo rather than looked up through fontconfig because the
+    Black weight isn't in Debian's fonts-noto-core -- on the server the family
+    resolves to Noto Sans Mono only, and a system lookup would silently land on
+    the DejaVu fallback with captions a weight lighter than the ones reviewed in
+    the browser."""
+    noto = FONTS_DIR / "NotoSans-Black.ttf"
+    return noto if noto.is_file() else find_caption_font()
+
+
 def find_caption_font():
     """The bold condensed face memes use for impact captions -- thick enough to read
     under a heavy stroke outline at small sizes, which a normal-weight prose font
@@ -191,12 +207,13 @@ def short_text_layer(size, texts):
     word-wrapped and auto-fit -- the short-clip equivalent of furniture_layer.
     `texts` is [{"text": str, "rect": (x, y, w, h), "scale": float}, ...]; `scale`
     (default 1.0) is the caption's text-size control, applied on top of the
-    auto-fit size. Styled after the meme caption look: bold condensed Impact,
-    yellow fill, thick black outline.
+    auto-fit size. Styled after the meme caption look: Noto Sans Black, yellow
+    fill, thick black outline, and a halo of the fill colour behind the lot so
+    the caption separates from a busy broadcast frame.
     """
     layer = Image.new("RGBA", size, (0, 0, 0, 0))
     draw = ImageDraw.Draw(layer)
-    font_path = find_caption_font()
+    font_path = find_short_font()
     for item in texts or []:
         text = (item.get("text") or "").strip()
         if not text:
@@ -210,10 +227,45 @@ def short_text_layer(size, texts):
         line_height = (draw.textbbox((0, 0), "Ag", font=font)[3]) * 1.05
         stroke = max(3, round(font.size * 0.11))
         top = y + h / 2 - line_height * len(lines) / 2
-        for index, line in enumerate(lines):
-            draw.text((x + w / 2, top + line_height * (index + 0.5)), line, font=font,
-                      anchor="mm", fill="#ffe100", stroke_width=stroke, stroke_fill="#000000")
+        fill = item.get("fill") or "#ffe100"
+        placed = [((x + w / 2, top + line_height * (index + 0.5)), line)
+                  for index, line in enumerate(lines)]
+        layer.alpha_composite(text_glow(size, placed, font, fill, stroke))
+        for point, line in placed:
+            draw.text(point, line, font=font, anchor="mm", fill=fill,
+                      stroke_width=stroke, stroke_fill="#000000")
     return layer
+
+
+# The glow is painted as the text again, spread by a blur: `GLOW_SPREAD` is how far
+# past the black outline it reaches (in stroke widths) and `GLOW_PASSES` how many
+# times that blurred copy is stacked. Compared side by side on a 1080x1920 caption:
+# one pass disappears under the outline, and from spread 1.6 x3 upwards the halo
+# closes the gap between two wrapped lines and reads as a yellow slab rather than a
+# glow. 1.4 x2 stays clear of the line above while the black outline holds the edge.
+GLOW_SPREAD = 1.4
+GLOW_PASSES = 2
+
+
+def text_glow(size, placed, font, colour, stroke):
+    """A blurred copy of the caption in its own colour -- the halo drawn under it.
+
+    `placed` is [((cx, cy), line), ...] with the same centres the caption is drawn
+    at, so the glow sits exactly behind the text rather than being offset like a
+    shadow. Drawn on its own canvas and blurred whole: blurring each line
+    separately would leave a seam where two lines overlap.
+    """
+    glow = Image.new("RGBA", size, (0, 0, 0, 0))
+    pen = ImageDraw.Draw(glow)
+    spread = max(2, round(stroke * GLOW_SPREAD))
+    for point, line in placed:
+        pen.text(point, line, font=font, anchor="mm", fill=colour,
+                 stroke_width=stroke + spread, stroke_fill=colour)
+    glow = glow.filter(ImageFilter.GaussianBlur(spread))
+    stacked = Image.new("RGBA", size, (0, 0, 0, 0))
+    for _ in range(GLOW_PASSES):
+        stacked.alpha_composite(glow)
+    return stacked
 
 
 def caption_window(item):

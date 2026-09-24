@@ -366,6 +366,19 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Caption short: Noto Sans Black + glow sewarna teks.** `core/render.short_text_layer()`
+memakai `find_short_font()` → `assets/fonts/NotoSans-Black.ttf` yang **ikut di repo**
+(lisensi OFL di folder yang sama). Fontnya tidak dicari lewat fontconfig karena berat
+Black tidak ada di paket Debian `fonts-noto-core` — di server keluarga Noto cuma
+menyediakan Noto Sans Mono, jadi pencarian sistem akan diam-diam jatuh ke DejaVu Bold
+yang sedikit lebih tipis. Glow digambar `text_glow()`: teks yang sama, stroke sewarna
+isian, lalu diblur dan ditumpuk `GLOW_PASSES` kali — satu kanvas untuk semua baris,
+karena memblur per baris meninggalkan garis sambung di tumpang tindihnya. Ukurannya
+diukur bandingan di kanvas 1080×1920: satu tumpukan hilang tertelan outline hitam, dan
+mulai `spread 1.6 ×3` halonya menutup celah antar baris sehingga jadi blok kuning —
+dipakai `GLOW_SPREAD = 1.4`, `GLOW_PASSES = 2`. Outline hitam tetap. Thumbnail tidak
+ikut berubah: `core/thumbnail.text_layer()` masih pakai `find_caption_font()`.
+
 **Logo dan nama pemain digambar di PIL, bukan `drawtext`.** `core/render.furniture_layer()`
 membuat satu PNG RGBA seukuran frame berisi logo + papan nama, lalu ditimpa sekali
 sebagai input ffmpeg terakhir. Alasannya: `drawtext` butuh path font di dalam string
