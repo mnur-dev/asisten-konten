@@ -317,7 +317,8 @@ async function loadList() {
           return `<button class="mark ${up ? "on" : ""}" title="${up
             ? `Sudah diupload ke ${CHANNEL_NAMES[slug]} (${escape_(up.at)}) — klik untuk batalkan`
             : `Tandai sudah diupload ke ${CHANNEL_NAMES[slug]}`}"
-            onclick="event.stopPropagation();toggleUploaded('${p.id}','${slug}',${up ? "true" : "false"})">
+            onclick="event.stopPropagation();toggleUploaded('${p.id}','${slug}',${up ? "true" : "false"},'${
+              escape_(p.name || p.id).replace(/'/g, "\\'")}')">
             <img src="api/channels/${slug}/logo" alt="${CHANNEL_NAMES[slug]}"></button>`;
         }).join("")}
       </div>
@@ -339,7 +340,14 @@ async function loadList() {
 
 // Marking lives on the project row: one small channel avatar per channel, lit when
 // this project went up there. The app cannot know by itself -- uploading is manual.
-async function toggleUploaded(id, channel, marked) {
+// `name` is passed only from the row, and asking there is deliberate: the avatars sit
+// inside a row whose whole area opens the project, so on a phone a tap meant for the
+// project lands on a 26px avatar and marks it silently. One such stray mark already
+// happened, and the mark is what "hapus proyek yang sudah diupload" deletes by. The
+// publish step's own button needs no question -- getting there is the deliberate act.
+async function toggleUploaded(id, channel, marked, name) {
+  if (name && !marked
+      && !confirm(`Tandai "${name}" sudah diupload ke ${CHANNEL_NAMES[channel]}?`)) return;
   try {
     await api(`api/projects/${id}/uploaded`, {
       method: "POST", headers: { "Content-Type": "application/json" },

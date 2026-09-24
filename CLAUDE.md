@@ -79,6 +79,12 @@ panjang selalu mulai paling lambat di langkah 1 dan selalu lewat langkah terakhi
 channel (`GET /api/channels/{slug}/logo` — avatar YouTube diunduh ke `app/ui/channels/`);
 abu-abu = belum, berwarna + cincin oranye = sudah. Klik untuk menandai/membatalkan
 (`POST /uploaded`, satu entri per channel: `{channel, title, at}` di `meta["uploads"]`).
+**Menandai dari baris daftar bertanya dulu** (`confirm()`), membatalkan tidak: avatarnya
+26 px dan duduk di dalam baris yang seluruh areanya membuka proyek, jadi di HP satu
+ketukan meleset menandai proyek tanpa bunyi — sudah pernah terjadi sekali (24 Sep 2026,
+proyek Magnus–MVL tertandai Checkmate Theater tanpa disengaja), dan tanda inilah yang
+dipakai "hapus proyek yang sudah diupload" untuk memilih korban. Tombol di langkah 6
+tidak bertanya karena sampai ke sana sudah tindakan sengaja.
 Proyek yang sudah ditandai **tidak lagi** menampilkan pill status "selesai" — tanda upload
 menggantikannya, dan warnanya sengaja beda (`--mark` oranye vs `--ok` hijau) supaya
 "selesai dirender" tidak tertukar dengan "sudah tayang". Tombol sidebar
