@@ -388,6 +388,15 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Langkah 6 urutannya Judul → Thumbnail → Paket upload.** `titleCard()` berdiri
+sendiri di atas: pemilih channel + file, kolom judul, dan 5 saran judul Claude.
+Alasannya berantai — teks thumbnail ditulis untuk **melengkapi judul yang dipilih**
+(`chosenTitle()` → `thumb_text_suggestions`), jadi memilih judul setelah thumbnail
+berarti mengerjakan dua kali. `uploadCard()` di bawahnya tidak lagi punya pemilih
+channel/file maupun kolom judul; ia cuma menyebut keduanya dan menunjuk ke kartu atas,
+supaya tidak ada dua tempat mengubah hal yang sama. Keduanya baru muncul setelah ada
+file hasil render (`uploadFiles()`), sama seperti sebelumnya.
+
 **Channel tujuan dipilih di form proyek baru, bukan di akhir.** `meta["channel"]`
 (`POST /api/projects` menerimanya; `POST /api/projects/{id}/channel` mengubahnya)
 menentukan tiga hal sekaligus: logo mana yang **ditempel ke video panjang**, channel

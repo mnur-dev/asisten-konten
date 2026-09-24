@@ -678,12 +678,14 @@ function stepBody(s) {
       </div>
     </div>
     ${stepFoot(5)}`;
+  const packaged = uploadFiles(s).length && uploadTemplates;
   return `
+    ${packaged ? titleCard(s) : ""}
     <div class="card">
       ${stepHead("Thumbnail", "")}
       ${pickerBody(s)}
     </div>
-    ${uploadFiles(s).length && uploadTemplates ? uploadCard(s)
+    ${packaged ? uploadCard(s)
       : `<div class="card">${stepHead("Paket upload", uploadFiles(s).length ? "Memuat…" : "Render dulu video panjang atau short di langkah 5.")}</div>`}
     ${stepFoot(6)}`;
 }
@@ -2833,7 +2835,7 @@ function thumbTextBox(s) {
         ${thumbTextBusy ? "Claude menulis… (±15 dtk)" : "Buat dari judul (Claude)"}</button>
     </div>
     <p class="hint" style="margin:6px 0 0">${title ? `Judul: “${escape_(title)}”`
-      : "Belum ada judul terpilih — pilih atau ketik judul di Paket upload di bawah."}</p>
+      : "Belum ada judul terpilih — pilih atau ketik judul di kartu Judul di atas."}</p>
     ${thumbTextError ? `<p class="err" style="margin:6px 0 0">${escape_(thumbTextError)}</p>` : ""}
     ${stored?.texts?.length ? `<div class="row" style="gap:6px;margin-top:8px">${stored.texts.map((t, i) =>
       `<button class="ghost" onclick="setThumbText(state.thumb_text_suggestions.texts[${i}].text)"
@@ -3181,12 +3183,35 @@ function uploadCount(field) {
   return `<span class="${used > limit ? "err" : "hint"}">${used}/${limit}</span>`;
 }
 
-function uploadCard(s) {
+const chip = (on, label, onclick) => `<button onclick="${onclick}" style="padding:5px 12px;${on
+  ? "border-color:var(--accent);color:var(--accent)" : ""}">${label}</button>`;
+
+// The title is chosen BEFORE the thumbnail, because the thumbnail's text is written
+// to complement it -- so it gets its own card above, with the channel and file
+// pickers that the rest of the upload package follows.
+function titleCard(s) {
   loadUploadForm(s);
   const files = uploadFiles(s);
+  return `<div class="card" id="titleCard">
+    ${stepHead("Judul", "Pilih judulnya dulu: teks thumbnail ditulis untuk melengkapi judul ini, dan paket upload memakainya.")}
+    <div class="row" style="margin-bottom:8px;gap:6px"><span class="hint">Channel:</span>
+      ${Object.entries(uploadTemplates || {}).map(([slug, c]) =>
+        chip(slug === uploadChannel, escape_(c.name), `setUploadChannel('${slug}')`)).join("")}</div>
+    <div class="row" style="margin-bottom:12px;gap:6px"><span class="hint">File:</span>
+      ${files.map((f) => chip(f === uploadFile, f === "short.mp4" ? "Short" : "Video panjang",
+        `setUploadFile('${f}')`)).join("")}</div>
+    <div class="row" style="justify-content:space-between"><label style="margin:0">Judul</label>
+      <span class="row" style="gap:8px"><span id="upCount-title">${uploadCount("title")}</span>
+      <button onclick="copyUpload('title', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
+    <input id="up-title" value="${escape_(uploadForm.title)}" oninput="onUploadInput('title', this.value)"
+           style="margin:5px 0 8px">
+    ${titleSuggestBox(s)}
+  </div>`;
+}
+
+function uploadCard(s) {
+  loadUploadForm(s);
   const safeName = (s.name || current).replace(/[\\/:*?"<>|]+/g, " ").trim();
-  const chip = (on, label, onclick) => `<button onclick="${onclick}" style="padding:5px 12px;${on
-    ? "border-color:var(--accent);color:var(--accent)" : ""}">${label}</button>`;
   return `<div class="card" id="uploadCard">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
       <b style="font-size:15px">Paket upload YouTube</b>
@@ -3194,19 +3219,9 @@ function uploadCard(s) {
     <p class="hint" style="margin:0 0 10px">Unggah manual lewat YouTube Studio / app: unduh
       filenya, lalu salin judul, deskripsi, dan tag di bawah. (Upload otomatis lewat API
       belum dipakai — sebelum app lolos audit YouTube, hasilnya terkunci private.)</p>
-    <div class="row" style="margin-bottom:8px;gap:6px"><span class="hint">Channel:</span>
-      ${Object.entries(uploadTemplates || {}).map(([slug, c]) =>
-        chip(slug === uploadChannel, escape_(c.name), `setUploadChannel('${slug}')`)).join("")}</div>
-    <div class="row" style="margin-bottom:12px;gap:6px"><span class="hint">File:</span>
-      ${files.map((f) => chip(f === uploadFile, f === "short.mp4" ? "Short" : "Video panjang",
-        `setUploadFile('${f}')`)).join("")}</div>
-
-    <div class="row" style="justify-content:space-between"><label style="margin:0">Judul</label>
-      <span class="row" style="gap:8px"><span id="upCount-title">${uploadCount("title")}</span>
-      <button onclick="copyUpload('title', this)" style="padding:3px 10px;font-size:12px">Salin</button></span></div>
-    <input id="up-title" value="${escape_(uploadForm.title)}" oninput="onUploadInput('title', this.value)"
-           style="margin:5px 0 8px">
-    ${titleSuggestBox(s)}
+    <p class="hint" style="margin:0 0 12px">Untuk <b>${escape_(uploadTemplates?.[uploadChannel]?.name || "")}</b>,
+      file <b>${uploadFile === "short.mp4" ? "Short" : "Video panjang"}</b> — ganti di kartu Judul di atas.
+      Judulnya juga dipilih di sana.</p>
 
     <div class="row" style="justify-content:space-between"><label style="margin:0">Deskripsi</label>
       <span class="row" style="gap:8px"><span id="upCount-description">${uploadCount("description")}</span>
