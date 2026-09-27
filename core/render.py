@@ -3,6 +3,7 @@
 One PNG per ply plus FFmpeg's concat demuxer, so encoding cost scales with the
 number of moves rather than the number of output frames.
 """
+import functools
 import logging
 import math
 import os
@@ -164,13 +165,16 @@ def boxed_font(draw, text, box_w, box_h, font_path):
     return ImageFont.truetype(path, 8)
 
 
-def wrap_lines(draw, text, font, max_width):
-    """Greedy word-wrap: pack words onto a line until the next one would overflow."""
+def wrap_lines(draw, text, font, max_width, measure=None):
+    """Greedy word-wrap: pack words onto a line until the next one would overflow.
+    `measure(draw, text, font)` overrides the width used, which is how captions get
+    their emoji counted (textlength() measures those as a missing glyph)."""
+    measure = measure or (lambda d, t, f: d.textlength(t, font=f))
     words = text.split()
     lines, line = [], ""
     for word in words:
         candidate = f"{line} {word}".strip()
-        if not line or draw.textlength(candidate, font=font) <= max_width:
+        if not line or measure(draw, candidate, font) <= max_width:
             line = candidate
         else:
             lines.append(line)
@@ -180,7 +184,7 @@ def wrap_lines(draw, text, font, max_width):
     return lines or [""]
 
 
-def fit_wrapped_font(draw, text, box_w, box_h, font_path, ceiling=140, scale=1.0):
+def fit_wrapped_font(draw, text, box_w, box_h, font_path, ceiling=140, scale=1.0, measure=None):
     """Largest size at which `text`, wrapped to `box_w`, still fits `box_h` -- a
     multi-line version of boxed_font() for captions rather than one-line labels.
     `scale` then shrinks/grows that auto-fit size by a user-chosen factor (the
@@ -188,18 +192,119 @@ def fit_wrapped_font(draw, text, box_w, box_h, font_path, ceiling=140, scale=1.0
     pushed above 1.0 the text can spill past the box, which is the point of letting
     someone size it up on purpose rather than always being capped to fit."""
     path = str(font_path)
+    width_of = measure or (lambda d, t, f: d.textlength(t, font=f))
     best = 10
     for size in range(ceiling, 9, -2):
         font = ImageFont.truetype(path, size)
-        lines = wrap_lines(draw, text, font, box_w)
+        lines = wrap_lines(draw, text, font, box_w, measure)
         line_height = (draw.textbbox((0, 0), "Ag", font=font)[3]) * 1.15
         if line_height * len(lines) <= box_h and all(
-                draw.textlength(line, font=font) <= box_w for line in lines):
+                width_of(draw, line, font) <= box_w for line in lines):
             best = size
             break
     final_size = max(6, round(best * scale))
     font = ImageFont.truetype(path, final_size)
-    return font, wrap_lines(draw, text, font, box_w)
+    return font, wrap_lines(draw, text, font, box_w, measure)
+
+
+# Colour emoji. The caption face (and every other text face here) carries no emoji
+# glyphs, so an emoji in a caption came out as an empty tofu box. Noto Color Emoji
+# fills that gap, but it is a CBDT bitmap font with a SINGLE strike: PIL refuses any
+# size but 109 ("invalid pixel size"), so each cluster is rendered once at 109 px and
+# scaled down to the caption's size rather than asked for at that size.
+EMOJI_FONT = Path("/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf")
+EMOJI_STRIKE = 109
+# Codepoints that start an emoji cluster. Deliberately narrow -- arrows and the
+# dingbat block hold characters that belong to ordinary text, and pulling those into
+# the bitmap font would change how plain captions look.
+EMOJI_STARTS = ((0x1F000, 0x1FAFF), (0x2600, 0x27BF), (0x2B00, 0x2BFF), (0x1F1E6, 0x1F1FF))
+# Continue whatever cluster is open: ZWJ sequences (family, flags), skin tones, the
+# emoji-presentation selector and keycaps. A cluster is drawn as one glyph, which is
+# the whole point -- splitting it would render the parts.
+EMOJI_JOINERS = (0x200D, 0xFE0F, 0xFE0E, 0x20E3) + tuple(range(0x1F3FB, 0x1F400))
+
+
+def is_emoji(char: str) -> bool:
+    return any(lo <= ord(char) <= hi for lo, hi in EMOJI_STARTS)
+
+
+def caption_pieces(text: str):
+    """`text` split into [(kind, chunk), ...] with kind "text" or "emoji", emoji
+    clusters kept whole."""
+    pieces, buffer, kind = [], "", None
+    for char in text:
+        if ord(char) in EMOJI_JOINERS and kind:
+            # a keycap is a plain character turned into an emoji by what follows it
+            # ("1" + VS16 + U+20E3), so that character has to move into the emoji run
+            if kind == "text" and ord(char) in (0xFE0F, 0x20E3) and buffer:
+                if buffer[:-1]:
+                    pieces.append(("text", buffer[:-1]))
+                kind, buffer = "emoji", buffer[-1]
+            buffer += char                      # continues whichever run is open
+            continue
+        this = "emoji" if is_emoji(char) else "text"
+        if this != kind and buffer:
+            pieces.append((kind, buffer))
+            buffer = ""
+        kind, buffer = this, buffer + char
+    if buffer:
+        pieces.append((kind, buffer))
+    return pieces
+
+
+@functools.lru_cache(maxsize=256)
+def emoji_tile(cluster: str, px: int):
+    """One emoji cluster as an RGBA image `px` tall, or None when the font can't draw
+    it. Cached: a caption redraws on every preview and the 109 px render plus resize
+    is the expensive part."""
+    if not EMOJI_FONT.is_file() or px < 4:
+        return None
+    try:
+        font = ImageFont.truetype(str(EMOJI_FONT), EMOJI_STRIKE)
+    except OSError:
+        return None
+    # sized from the cluster's own advance width: a fixed canvas clipped the second
+    # glyph of a run like two cold faces in a row
+    pad = EMOJI_STRIKE // 2
+    probe = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    width = max(EMOJI_STRIKE, round(probe.textlength(cluster, font=font))) + 2 * pad
+    tile = Image.new("RGBA", (width, EMOJI_STRIKE + 2 * pad), (0, 0, 0, 0))
+    ImageDraw.Draw(tile).text((pad, pad), cluster, font=font, embedded_color=True)
+    box = tile.getbbox()
+    if not box:
+        return None
+    tile = tile.crop(box)
+    scale = px / tile.height
+    return tile.resize((max(1, round(tile.width * scale)), px), Image.LANCZOS)
+
+
+def emoji_px(font) -> int:
+    """How tall an emoji is drawn next to `font`: a shade under the cap height, which
+    is what keeps it sitting on the line instead of towering over the letters."""
+    return max(4, round(font.size * 0.92))
+
+
+def piece_width(draw, kind, chunk, font) -> float:
+    if kind == "text":
+        return draw.textlength(chunk, font=font)
+    tile = emoji_tile(chunk, emoji_px(font))
+    return tile.width if tile else draw.textlength(chunk, font=font)
+
+
+def caption_width(draw, text, font) -> float:
+    """Width of one caption line with its emoji counted at the size they are drawn."""
+    return sum(piece_width(draw, kind, chunk, font) for kind, chunk in caption_pieces(text))
+
+
+def caption_layout(draw, line, centre_x, font):
+    """[(kind, chunk, left_x), ...] for one line, centred on `centre_x`."""
+    pieces = caption_pieces(line)
+    x = centre_x - caption_width(draw, line, font) / 2
+    placed = []
+    for kind, chunk in pieces:
+        placed.append((kind, chunk, x))
+        x += piece_width(draw, kind, chunk, font)
+    return placed
 
 
 def short_text_layer(size, texts):
@@ -223,17 +328,27 @@ def short_text_layer(size, texts):
         # outline below, which textlength()/fit_wrapped_font() don't account for
         pad_w, pad_h = w * 0.84, h * 0.84
         scale = item.get("scale") or 1.0
-        font, lines = fit_wrapped_font(draw, text, pad_w, pad_h, font_path, scale=scale)
+        font, lines = fit_wrapped_font(draw, text, pad_w, pad_h, font_path, scale=scale,
+                                       measure=caption_width)
         line_height = (draw.textbbox((0, 0), "Ag", font=font)[3]) * 1.05
         stroke = max(3, round(font.size * 0.11))
         top = y + h / 2 - line_height * len(lines) / 2
         fill = item.get("fill") or "#ffe100"
-        placed = [((x + w / 2, top + line_height * (index + 0.5)), line)
+        # every line resolved to (kind, chunk, left x) once: the glow, the outline and
+        # the emoji all have to land on the same layout or they drift apart
+        placed = [(caption_layout(draw, line, x + w / 2, font), top + line_height * (index + 0.5))
                   for index, line in enumerate(lines)]
         layer.alpha_composite(text_glow(size, placed, font, fill, stroke))
-        for point, line in placed:
-            draw.text(point, line, font=font, anchor="mm", fill=fill,
-                      stroke_width=stroke, stroke_fill="#000000")
+        for pieces, cy in placed:
+            for kind, chunk, left in pieces:
+                if kind == "text":
+                    draw.text((left, cy), chunk, font=font, anchor="lm", fill=fill,
+                              stroke_width=stroke, stroke_fill="#000000")
+                elif tile := emoji_tile(chunk, emoji_px(font)):
+                    layer.alpha_composite(tile, (round(left), round(cy - tile.height / 2)))
+                else:                       # no emoji font on this machine: draw it as text
+                    draw.text((left, cy), chunk, font=font, anchor="lm", fill=fill,
+                              stroke_width=stroke, stroke_fill="#000000")
     return layer
 
 
@@ -250,17 +365,21 @@ GLOW_PASSES = 2
 def text_glow(size, placed, font, colour, stroke):
     """A blurred copy of the caption in its own colour -- the halo drawn under it.
 
-    `placed` is [((cx, cy), line), ...] with the same centres the caption is drawn
-    at, so the glow sits exactly behind the text rather than being offset like a
-    shadow. Drawn on its own canvas and blurred whole: blurring each line
-    separately would leave a seam where two lines overlap.
+    `placed` is [(layout, cy), ...] from caption_layout(), the same positions the
+    caption itself is drawn at, so the glow sits exactly behind the letters rather
+    than being offset like a shadow. Drawn on its own canvas and blurred whole:
+    blurring each line separately would leave a seam where two lines overlap. Emoji
+    are left out -- they are colour bitmaps, and a halo in the caption's fill colour
+    around them would read as a stain, not a glow.
     """
     glow = Image.new("RGBA", size, (0, 0, 0, 0))
     pen = ImageDraw.Draw(glow)
     spread = max(2, round(stroke * GLOW_SPREAD))
-    for point, line in placed:
-        pen.text(point, line, font=font, anchor="mm", fill=colour,
-                 stroke_width=stroke + spread, stroke_fill=colour)
+    for pieces, cy in placed:
+        for kind, chunk, left in pieces:
+            if kind == "text":
+                pen.text((left, cy), chunk, font=font, anchor="lm", fill=colour,
+                         stroke_width=stroke + spread, stroke_fill=colour)
     glow = glow.filter(ImageFilter.GaussianBlur(spread))
     stacked = Image.new("RGBA", size, (0, 0, 0, 0))
     for _ in range(GLOW_PASSES):

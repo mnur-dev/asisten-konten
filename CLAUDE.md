@@ -465,6 +465,21 @@ menggambar apa pun dan tidak mengeluh sama sekali; sekarang kartu logo di langka
 Tata letak memberi peringatan kuning untuk kombinasi itu. Short tidak memakai logo
 ini sama sekali (`short_clip()` cuma papan + caption).
 
+**Emoji di caption short digambar sebagai gambar, bukan huruf.** Noto Sans Black
+(dan semua muka teks lain di sini) tidak punya glyph emoji, jadi 🥶 keluar sebagai
+kotak tofu kosong. Noto Color Emoji menutup itu, tapi font bitmap CBDT dan cuma
+punya **satu ukuran**: PIL menolak semua ukuran selain 109 px (`invalid pixel size`).
+Karena itu `emoji_tile()` merender tiap klaster sekali di 109 px lalu mengecilkannya
+(di-`lru_cache`, sebab satu caption digambar ulang tiap preview). `caption_pieces()`
+memecah teks jadi runtun teks/emoji — klaster ZWJ (keluarga), bendera, warna kulit,
+dan keycap (`1` + VS16 + U+20E3, karakter sebelumnya ikut dipindah ke runtun emoji)
+tetap utuh — lalu `caption_layout()` menaruh tiap potongan; glow dan outline hitam
+hanya kena runtun teks, emoji ditempel apa adanya karena halo kuning di sekelilingnya
+terbaca seperti noda. Lebar kanvas tile diambil dari advance width klaster: kanvas
+tetap memotong emoji kedua pada runtun seperti "🥶🥶". Caption tanpa emoji **identik
+piksel** dengan hasil sebelum perubahan ini (diuji: beda 0). Teks thumbnail belum
+ikut — `core/thumbnail.text_layer()` masih jalur lama.
+
 **Caption short: Noto Sans Black + glow sewarna teks.** `core/render.short_text_layer()`
 memakai `find_short_font()` → `assets/fonts/NotoSans-Black.ttf` yang **ikut di repo**
 (lisensi OFL di folder yang sama). Fontnya tidak dicari lewat fontconfig karena berat
