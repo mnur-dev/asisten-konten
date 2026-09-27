@@ -145,6 +145,40 @@ def channel_patterns(slug: str, kind: str) -> str:
             + "\n\n## Most recent titles (do not repeat these)\n" + "\n".join(f"- {v['title']}" for v in recent))
 
 
+def short_name(name: str) -> str:
+    """"Carlsen, Magnus" -> "Carlsen". PGN writes the family name first; the pairing
+    in a title uses that alone, the way the broadcasts do."""
+    name = (name or "").strip()
+    return (name.split(",")[0] if "," in name else name.split()[-1] if name else "").strip()
+
+
+def pairing_rule(folder: Path, meta: dict) -> str:
+    """The one title shape that is always asked for: what happened, then the pairing,
+    then the tournament after a pipe. The pairing alone is the channel's weakest
+    opener (37% of the bottom half against 18% of the top), so it is placed AFTER the
+    description rather than dropped -- that is the arrangement the channel's own hits
+    use ("Chess Veteran try to beat Magnus Carlsen | Ivanchuk vs Magnus")."""
+    headers = _pgn_headers((folder / "input.pgn").read_text(encoding="utf-8"))
+    white = short_name(headers.get("White") or meta.get("white", ""))
+    black = short_name(headers.get("Black") or meta.get("black", ""))
+    event = (headers.get("Event") or "").strip()
+    if event in ("", "?"):
+        tail = ('The PGN carries no tournament name, so end at the pairing and leave the '
+                '"| ..." off entirely — never invent an event.')
+        shape = f"<what happened, in a few words>, {white or '<White>'} vs {black or '<Black>'}"
+    else:
+        tail = f'The tournament for this game is "{event}" — write it after the pipe, last.'
+        shape = f"<what happened, in a few words>, {white or '<White>'} vs {black or '<Black>'} | {event}"
+    return (f"""Exactly one of the {COUNT} titles — the last one — must use this shape:
+
+    {shape}
+
+The description leads and the pairing follows it; the pairing must never open the
+title. {tail} Keep the whole thing inside the channel's length limit — the short forms
+the broadcasts themselves use are fine there (Nepo for Nepomniachtchi, GCL 2026 for
+the Global Chess League). The other {COUNT - 1} titles must NOT use this shape.""")
+
+
 def suggest(folder: Path, meta: dict, kind: str, slug: str = "pawn-initiate") -> list[dict]:
     source = meta.get("source_title") or "(unknown)"
     prompt = f"""Write {COUNT} YouTube titles for a {'Short (vertical, under a minute)' if kind == 'short' else 'long video (the full game, several minutes)'}
@@ -159,6 +193,9 @@ Use it for the angle only; never reuse its wording.
 
 # 3. What works on this channel
 {channel_patterns(slug, kind)}
+
+# 4. One required shape
+{pairing_rule(folder, meta)}
 
 Combine all three: each title must rest on a real fact of this game and follow a pattern
 that performs on this channel. Make the {COUNT} titles use different patterns from each other."""

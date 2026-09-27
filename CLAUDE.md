@@ -388,6 +388,19 @@ strip bawah papan (tinggi `CLOCK_HEIGHT` kotak, jarak `CLOCK_GAP`); `fit_size(cl
 menambah tinggi kanvas untuk strip itu. Tombol "⏱ jam" di panel Tampilan nonaktif kalau
 PGN-nya tidak punya `[%clk]`.
 
+**Satu dari lima judul selalu berformat pasangan.** `pairing_rule()` mewajibkan judul
+kelima berbentuk `<gambaran singkat>, <Putih> vs <Hitam> | <turnamen>` — nama pemain
+diambil dari header PGN (`short_name()`: "Carlsen, Magnus" → "Carlsen") dan turnamennya
+dari header `Event`. Kalau `Event` kosong atau `?`, promptnya menyuruh berhenti di
+pasangan dan **melarang mengarang** nama turnamen. Urutannya bukan selera: pasangan
+telanjang di depan adalah pembuka terlemah channel ini (37% paruh bawah vs 18% puncak),
+sedangkan susunan deskripsi-dulu-pasangan-belakang justru dipakai video-video hitsnya.
+Empat judul lain dilarang memakai bentuk ini. Terverifikasi: video panjang → "Neither
+Side Blinked for 27 Moves, Carlsen vs Nepo | GCL 2026" (61 huruf, batas 70), Shorts →
+"A Flawless 27-Move Draw, Carlsen vs Nepo | GCL 2026" (51, batas 60) — model memendekkan
+sendiri "Nepomniachtchi"/"Tech Mahindra Global Chess League" seperti yang diizinkan
+prompt, jadi batas panjangnya tidak jebol.
+
 **Checkmate Theater meminjam data judul Pawn Initiate.** `PATTERN_SOURCE` di
 `core/titles.py` memetakan channel yang belum punya riwayat judul ke channel yang
 punya. Checkmate Theater baru jadi channel catur Sep 2026, jadi tidak ada judul
