@@ -2842,6 +2842,24 @@ function chosenTitle(s) {
   return key ? drafts[key].title : "";
 }
 
+const thumbTextTip = (title) => title ? "Buat 3 teks yang melengkapi judul ini"
+                                      : "Pilih judul dulu di kartu Judul di atas";
+const thumbTextNote = (title) => title ? `Judul: “${escape_(title)}”`
+  : "Belum ada judul terpilih — pilih atau ketik judul di kartu Judul di atas.";
+
+// The title is chosen in the card ABOVE this one, and picking or typing one there
+// only patches that card (a full redraw would pull the caret out of the title field).
+// So this button has to be told, or it sits disabled next to a title that is already
+// chosen -- which is exactly how it behaved before.
+function refreshThumbText() {
+  const button = $("thumbTextBtn"), hint = $("thumbTextHint");
+  if (!button || !state) return;
+  const title = chosenTitle(state);
+  button.disabled = thumbTextBusy || !title;
+  button.title = thumbTextTip(title);
+  if (hint) hint.innerHTML = thumbTextNote(title);
+}
+
 function thumbTextBox(s) {
   const title = chosenTitle(s);
   const stored = s.thumb_text_suggestions;
@@ -2851,12 +2869,11 @@ function thumbTextBox(s) {
       <input id="thumbTextInput" value="${escape_(s.thumb_text || "")}" placeholder="mis. Kramnik Rage Quit!!"
              style="flex:1;min-width:160px" onkeydown="if(event.key==='Enter') setThumbText(this.value)">
       <button onclick="setThumbText($('thumbTextInput').value)">Pakai</button>
-      <button ${thumbTextBusy || !title ? "disabled" : ""} onclick="suggestThumbText()"
-              title="${title ? "Buat 3 teks yang melengkapi judul ini" : "Pilih judul dulu di Paket upload"}">
+      <button id="thumbTextBtn" ${thumbTextBusy || !title ? "disabled" : ""} onclick="suggestThumbText()"
+              title="${thumbTextTip(title)}">
         ${thumbTextBusy ? "Claude menulis… (±15 dtk)" : "Buat dari judul (Claude)"}</button>
     </div>
-    <p class="hint" style="margin:6px 0 0">${title ? `Judul: “${escape_(title)}”`
-      : "Belum ada judul terpilih — pilih atau ketik judul di kartu Judul di atas."}</p>
+    <p class="hint" id="thumbTextHint" style="margin:6px 0 0">${thumbTextNote(title)}</p>
     ${thumbTextError ? `<p class="err" style="margin:6px 0 0">${escape_(thumbTextError)}</p>` : ""}
     ${stored?.texts?.length ? `<div class="row" style="gap:6px;margin-top:8px">${stored.texts.map((t, i) =>
       `<button class="ghost" onclick="setThumbText(state.thumb_text_suggestions.texts[${i}].text)"
@@ -3408,6 +3425,7 @@ function setUploadFile(file) { switchUpload(() => { uploadFile = file; }); }
 function onUploadInput(field, value) {
   uploadForm[field] = value; uploadDirty = true;
   const count = $(`upCount-${field}`); if (count) count.innerHTML = uploadCount(field);
+  if (field === "title") refreshThumbText();
   const button = $("upSave");
   if (button) { button.disabled = false; button.className = "primary"; button.textContent = "Simpan draf"; }
 }

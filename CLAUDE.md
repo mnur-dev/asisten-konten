@@ -426,6 +426,18 @@ Salin per judul memakai `copyText()` yang sama dengan kolom-kolom paket upload, 
 textarea sementara sebagai cadangan kalau clipboard API tidak tersedia (judulnya tidak
 duduk di dalam field mana pun).
 
+**Kartu yang bergantung pada kartu lain harus ditulis ulang sendiri.** Judul dipilih
+di `titleCard()`, tapi tombol "Buat dari judul (Claude)" hidup di kartu Thumbnail di
+bawahnya. `onUploadInput()` sengaja **tidak** memanggil `draw()` — redraw penuh
+menarik kursor keluar dari kolom judul yang sedang diketik — sehingga memilih judul
+dulu meninggalkan tombol itu tetap mati di sebelah judul yang sebenarnya sudah ada
+(bug nyata, 29 Sep 2026). Perbaikannya `refreshThumbText()`: menambal tombol + baris
+hint itu saja saat field `title` berubah. Pola yang sama dipakai
+`refreshWindowButton()` dan `refreshThumbPromptButton()` — kalau nanti ada kartu lain
+yang ikut bergantung pada judul, ia juga harus ditambal di sini, bukan menunggu
+`draw()` berikutnya. Backendnya sendiri sehat: `thumb-text-suggestions` menjawab 3
+teks dalam ~15 dtk dan `thumb-text` menukar teks di dalam tanda kutip pada prompt.
+
 **Langkah 6 urutannya Judul → Thumbnail → Paket upload.** `titleCard()` berdiri
 sendiri di atas: pemilih channel + file, kolom judul, dan 5 saran judul Claude.
 Alasannya berantai — teks thumbnail ditulis untuk **melengkapi judul yang dipilih**
