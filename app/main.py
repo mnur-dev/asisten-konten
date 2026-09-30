@@ -536,7 +536,8 @@ def start_detect(project_id: str):
 
     def work(path: Path):
         detect(meta["video"], path / "input.pgn", output=path / "timestamps.json")
-        update(path, status="ready")
+        update(path, status="ready")      # ditandai selesai dulu: saran judul di bawah
+        suggest_after_detect(path)        # cuma pelengkap, tidak boleh menggagalkan deteksi
 
     background(project_id, work)
     return {"status": "detecting"}
@@ -1405,30 +1406,60 @@ class TitleRequest(BaseModel):
     channel: str = "pawn-initiate"
 
 
+def write_titles(path: Path, meta: dict, kind: str, channel: str) -> list[dict]:
+    """Ask Claude Code for five titles and store them on the project. Shared by the
+    button in the publish step and by the detection job, so both keep the same key
+    (`<channel>:<kind>`) and the same yt-dlp lookup of the source video's title."""
+    if not meta.get("source_title") and meta.get("video_url"):
+        info = source_info(meta["video_url"])
+        if info:
+            meta = update(path, source_title=info["title"], source_channel=info["channel"])
+    result = titles.suggest(path, meta, kind, channel)
+    stored = read_meta(path).get("title_suggestions") or {}
+    stored[f"{channel}:{kind}"] = {"titles": result, "created": time.strftime("%Y-%m-%d %H:%M")}
+    update(path, title_suggestions=stored)
+    return result
+
+
+def suggest_after_detect(path: Path) -> None:
+    """Five long-video titles as soon as detection succeeds, for the project's own
+    channel. The whole publish step hangs off the chosen title -- the thumbnail text
+    is written to complement it -- so paying the ~20 s Claude call here means it is
+    already done by the time anyone opens that step. Never allowed to raise:
+    detection has already succeeded, and losing that to a title call would be absurd.
+    """
+    meta = read_meta(path)
+    channel = meta.get("channel") or next(iter(UPLOAD_CHANNELS))
+    if channel not in titles.pattern_channels():
+        return
+    if (meta.get("title_suggestions") or {}).get(f"{channel}:long"):
+        return
+    log = logging.getLogger("core")
+    log.info("Membuat 5 saran judul %s (Claude)", UPLOAD_CHANNELS.get(channel, channel))
+    try:
+        result = write_titles(path, meta, "long", channel)
+        log.info("Saran judul siap: %s", result[0]["title"] if result else "(kosong)")
+    except Exception as error:
+        log.warning("Saran judul gagal, bisa diulang dari langkah Terbitkan: %s",
+                    str(error) or type(error).__name__)
+
+
 @app.post("/api/projects/{project_id}/title-suggestions")
 def title_suggestions(project_id: str, body: TitleRequest):
     """Five titles from Claude Code, combining the source video's title, the PGN and
     the channel's measured patterns (core/titles.py). Runs in the request (FastAPI
-    puts plain `def` endpoints on a worker thread); takes ~10-40 s. The source title
-    is looked up once with yt-dlp and cached in meta.json."""
+    puts plain `def` endpoints on a worker thread); takes ~10-40 s."""
     if body.kind not in ("long", "short"):
         raise HTTPException(400, "kind must be long or short")
     path = folder(project_id)
     meta = read_meta(path)
     if body.channel not in titles.pattern_channels():
         raise HTTPException(400, f"Belum ada pola judul untuk channel {body.channel}")
-    if not meta.get("source_title") and meta.get("video_url"):
-        info = source_info(meta["video_url"])
-        if info:
-            meta = update(path, source_title=info["title"], source_channel=info["channel"])
     try:
-        result = titles.suggest(path, meta, body.kind, body.channel)
+        result = write_titles(path, meta, body.kind, body.channel)
     except Exception as error:
         raise HTTPException(502, str(error) or type(error).__name__)
-    stored = meta.get("title_suggestions") or {}
-    stored[f"{body.channel}:{body.kind}"] = {"titles": result, "created": time.strftime("%Y-%m-%d %H:%M")}
-    update(path, title_suggestions=stored)
-    return {"titles": result, "source_title": meta.get("source_title")}
+    return {"titles": result, "source_title": read_meta(path).get("source_title")}
 
 
 class UploadDraft(BaseModel):

@@ -152,7 +152,7 @@ def short_name(name: str) -> str:
     return (name.split(",")[0] if "," in name else name.split()[-1] if name else "").strip()
 
 
-def pairing_rule(folder: Path, meta: dict) -> str:
+def pairing_rule(folder: Path, meta: dict, kind: str) -> str:
     """The one title shape that is always asked for: what happened, then the pairing,
     then the tournament after a pipe. The pairing alone is the channel's weakest
     opener (37% of the bottom half against 18% of the top), so it is placed AFTER the
@@ -162,6 +162,7 @@ def pairing_rule(folder: Path, meta: dict) -> str:
     white = short_name(headers.get("White") or meta.get("white", ""))
     black = short_name(headers.get("Black") or meta.get("black", ""))
     event = (headers.get("Event") or "").strip()
+    limit = 60 if kind == "short" else 70      # batas yang sama dipakai title-patterns
     if event in ("", "?"):
         tail = ('The PGN carries no tournament name, so end at the pairing and leave the '
                 '"| ..." off entirely — never invent an event.')
@@ -174,9 +175,11 @@ def pairing_rule(folder: Path, meta: dict) -> str:
     {shape}
 
 The description leads and the pairing follows it; the pairing must never open the
-title. {tail} Keep the whole thing inside the channel's length limit — the short forms
-the broadcasts themselves use are fine there (Nepo for Nepomniachtchi, GCL 2026 for
-the Global Chess League). The other {COUNT - 1} titles must NOT use this shape.""")
+title. {tail} This title, pipe and tournament included, must still fit in {limit}
+characters — shorten the pairing and the tournament to the short forms the broadcasts
+themselves use (Nepo for Nepomniachtchi, GCL 2026 for the Global Chess League, Tata
+Steel for Tata Steel Chess Tournament), or drop the tournament rather than run over.
+The other {COUNT - 1} titles must NOT use this shape.""")
 
 
 def suggest(folder: Path, meta: dict, kind: str, slug: str = "pawn-initiate") -> list[dict]:
@@ -195,7 +198,7 @@ Use it for the angle only; never reuse its wording.
 {channel_patterns(slug, kind)}
 
 # 4. One required shape
-{pairing_rule(folder, meta)}
+{pairing_rule(folder, meta, kind)}
 
 Combine all three: each title must rest on a real fact of this game and follow a pattern
 that performs on this channel. Make the {COUNT} titles use different patterns from each other."""

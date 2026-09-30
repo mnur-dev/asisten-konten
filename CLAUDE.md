@@ -395,7 +395,9 @@ dari header `Event`. Kalau `Event` kosong atau `?`, promptnya menyuruh berhenti 
 pasangan dan **melarang mengarang** nama turnamen. Urutannya bukan selera: pasangan
 telanjang di depan adalah pembuka terlemah channel ini (37% paruh bawah vs 18% puncak),
 sedangkan susunan deskripsi-dulu-pasangan-belakang justru dipakai video-video hitsnya.
-Empat judul lain dilarang memakai bentuk ini. Terverifikasi: video panjang → "Neither
+Empat judul lain dilarang memakai bentuk ini. Batas panjangnya (70 video panjang /
+60 Shorts) **disebut angkanya** di aturan itu sejak 30 Sep 2026: tanpa angka, model
+sempat menulis judul 88 huruf karena memakai nama turnamen versi panjang. Terverifikasi: video panjang → "Neither
 Side Blinked for 27 Moves, Carlsen vs Nepo | GCL 2026" (61 huruf, batas 70), Shorts →
 "A Flawless 27-Move Draw, Carlsen vs Nepo | GCL 2026" (51, batas 60) — model memendekkan
 sendiri "Nepomniachtchi"/"Tech Mahindra Global Chess League" seperti yang diizinkan
@@ -413,9 +415,22 @@ lewat status (`title_channels`); UI membacanya, tidak menyimpan daftar sendiri.
 Terverifikasi di production: 5 judul Checkmate Theater dalam 20 dtk, tidak ada yang
 menyalin judul Pawn Initiate.
 
-**Saran judul jalan sendiri, dan tiap judul punya tombol Salin.** Masuk ke langkah 6
-(atau berpindah channel/file di kartu Judul) langsung memanggil `suggestTitles()`
-tanpa menunggu tombol — panggilan Claude ~20 dtk itu toh ada di jalur kritis, karena
+**Saran judul dibuat begitu deteksi selesai, di server.** Job deteksi memanggil
+`suggest_after_detect()` setelah status jadi `ready` — 5 judul video panjang untuk
+channel tujuan proyek, disimpan di `meta["title_suggestions"]["<channel>:long"]`.
+Dijalankan di sana supaya tidak bergantung browser tetap terbuka, dan supaya panggilan
+Claude ~20 dtk sudah lunas sebelum siapa pun membuka langkah Terbitkan. Dua pagar:
+statusnya di-`update` jadi `ready` **sebelum** saran judul dibuat, dan fungsinya
+menelan semua errornya sendiri (dicatat ke log proyek) — deteksi yang sudah berhasil
+tidak boleh berubah jadi "gagal" gara-gara panggilan judul. Dilewati kalau saran untuk
+channel itu sudah ada atau channelnya belum punya pola. `write_titles()` dipakai
+bersama oleh job ini dan tombol di UI, jadi kuncinya dan pencarian judul sumber
+(yt-dlp) tidak bisa berbeda.
+
+**Saran judul juga jalan sendiri di UI, dan tiap judul punya tombol Salin.** Masuk ke
+langkah 6 (atau berpindah channel/file di kartu Judul) memanggil `suggestTitles()`
+tanpa menunggu tombol — ini jaring pengaman untuk Short, untuk channel lain, dan untuk
+proyek lama yang dideteksi sebelum aturan di atas ada — panggilan Claude ~20 dtk itu toh ada di jalur kritis, karena
 teks thumbnail ditulis melawan judul yang dipilih. `autoSuggestTitles()` menjaga
 supaya itu **sekali saja** per proyek+channel+file (`autoTitled`), tidak jalan kalau
 sudah ada hasil tersimpan, tidak jalan saat proyek sibuk, dan **tidak mengulang
