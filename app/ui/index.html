@@ -536,7 +536,7 @@ const autoTitled = new Set();
 
 async function autoSuggestTitles() {
   if (!state || state.busy || titleBusy) return;
-  if (!uploadTemplates || !uploadFiles(state).length) return;
+  if (!uploadTemplates) return;
   if (!titleChannels(state).includes(uploadChannel)) return;
   const kind = uploadFile === "short.mp4" ? "short" : "long";
   const key = `${current}:${uploadChannel}:${kind}`;
@@ -701,7 +701,7 @@ function stepBody(s) {
     ${stepFoot(5)}`;
   const packaged = uploadFiles(s).length && uploadTemplates;
   return `
-    ${packaged ? titleCard(s) : ""}
+    ${uploadTemplates ? titleCard(s) : ""}
     <div class="card">
       ${stepHead("Thumbnail", "")}
       ${pickerBody(s)}
@@ -3197,7 +3197,10 @@ function uploadFiles(s) {
 // The draft saved for this channel + file, else the project name + channel defaults.
 function loadUploadForm(s) {
   const files = uploadFiles(s);
-  if (!files.includes(uploadFile)) uploadFile = files[0] || null;
+  // sebelum ada hasil render pun judul sudah bisa dipilih (saran judul dibuat sejak
+  // deteksi selesai), jadi targetnya jatuh ke video panjang, bukan null
+  if (!files.includes(uploadFile) && !["full-video.mp4", "short.mp4"].includes(uploadFile))
+      uploadFile = files[0] || "full-video.mp4";
   const key = `${uploadChannel}:${uploadFile}`;
   if (uploadFormKey === key && uploadForm) return;
   const draft = (s.upload_drafts || {})[key];
@@ -3235,8 +3238,9 @@ function titleCard(s) {
     <div class="row" style="margin-bottom:8px;gap:6px"><span class="hint">Channel:</span>
       ${Object.entries(uploadTemplates || {}).map(([slug, c]) =>
         chip(slug === uploadChannel, escape_(c.name), `setUploadChannel('${slug}')`)).join("")}</div>
-    <div class="row" style="margin-bottom:12px;gap:6px"><span class="hint">File:</span>
-      ${files.map((f) => chip(f === uploadFile, f === "short.mp4" ? "Short" : "Video panjang",
+    <div class="row" style="margin-bottom:12px;gap:6px"><span class="hint">Judul untuk:</span>
+      ${["full-video.mp4", "short.mp4"].map((f) => chip(f === uploadFile,
+        (f === "short.mp4" ? "Short" : "Video panjang") + (files.includes(f) ? "" : " (belum dirender)"),
         `setUploadFile('${f}')`)).join("")}</div>
     <div class="row" style="justify-content:space-between"><label style="margin:0">Judul</label>
       <span class="row" style="gap:8px"><span id="upCount-title">${uploadCount("title")}</span>
@@ -3282,7 +3286,7 @@ function uploadCard(s) {
     </div>
     ${uploadMark(s)}
     <div class="row" style="gap:8px;margin-top:12px">
-      ${uploadFile ? `<a class="btnlink primary" href="api/projects/${current}/file/${uploadFile}"
+      ${uploadFiles(s).includes(uploadFile) ? `<a class="btnlink primary" href="api/projects/${current}/file/${uploadFile}"
           download="${escape_(safeName)}${uploadFile === "short.mp4" ? " (short)" : ""}.mp4">Unduh video</a>` : ""}
       ${s.has_thumbnail && uploadFile !== "short.mp4" ? `<a class="btnlink" href="api/projects/${current}/file/thumbnail.png"
           download="${escape_(safeName)}.png">Unduh thumbnail</a>` : ""}

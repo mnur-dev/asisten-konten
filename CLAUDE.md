@@ -427,6 +427,16 @@ channel itu sudah ada atau channelnya belum punya pola. `write_titles()` dipakai
 bersama oleh job ini dan tombol di UI, jadi kuncinya dan pencarian judul sumber
 (yt-dlp) tidak bisa berbeda.
 
+**Kartu Judul muncul sejak deteksi selesai, bukan menunggu render.** Saran judul
+dibuat server begitu deteksi berhasil, tapi sampai 1 Okt 2026 kartunya masih ikut
+syarat `uploadFiles()` — jadi hasilnya sudah tersimpan tapi **tidak kelihatan di mana
+pun**, dan dari luar terlihat seperti fiturnya tidak jalan. Sekarang `titleCard()`
+cuma menunggu template channel termuat; `uploadFile` jatuh ke `"full-video.mp4"` kalau
+belum ada hasil render, pemilihnya berlabel "Judul untuk" dengan tanda "(belum
+dirender)", dan tombol unduh di kartu Paket upload baru muncul kalau filenya benar-benar
+ada. Pelajarannya: kalau pekerjaan dipindah lebih awal di alur, cek juga apakah
+tampilannya ikut pindah.
+
 **Saran judul juga jalan sendiri di UI, dan tiap judul punya tombol Salin.** Masuk ke
 langkah 6 (atau berpindah channel/file di kartu Judul) memanggil `suggestTitles()`
 tanpa menunggu tombol — ini jaring pengaman untuk Short, untuk channel lain, dan untuk
