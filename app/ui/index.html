@@ -504,7 +504,7 @@ function stepReady(n, s) {
 function stepDone(n, s) {
   const outs = s.outputs || [];
   return n === 1 ? !!s.waypoints
-    : n === 2 ? !!(s.paste_rect || (s.logo_rects || []).length || (s.blur_rects || []).length
+    : n === 2 ? !!((s.paste_plan || []).length || (s.logo_rects || []).length || (s.blur_rects || []).length
                    || s.brand_rect || s.name_rects?.white || s.name_rects?.black || s.source_zoom)
     : n === 3 ? !!s.has_short_layout
     : n === 4 ? !!s.window_set
@@ -920,10 +920,10 @@ const LAYERS = {
     hint: "Atur persentase zoom, lalu geser kotaknya untuk menentukan arena video sumber yang dipakai di render final. Diterapkan PALING AWAL, sebelum papan/logo/nama ditempel -- jadi atur ini dulu, baru tempatkan kotak-kotak lain di bawah, sebab pratinjaunya mengikuti crop zoom ini.",
   },
   paste: {
-    label: "Papan render", colour: "#7bb26a", multi: false,
-    hint: "Tarik kotak tempat papan hasil render ditempel di video. Kosongkan untuk memakai posisi papan overlay yang terdeteksi otomatis. Papan menjaga rasio aslinya dan diletakkan di tengah kotak.",
-    get: (s) => (s.paste_rect ? [s.paste_rect] : []),
-    save: (rects) => post("paste-rect", { rect: rects[0] || null }),
+    label: "Papan render", colour: "#7bb26a", multi: true, plan: true,
+    hint: "Tarik kotak tempat papan hasil render ditempel di video, lalu simpan. Kosongkan untuk memakai posisi papan overlay yang terdeteksi otomatis (kotak putus-putus). Papan menjaga rasio aslinya dan diletakkan di tengah kotak. Siaran yang memindahkan papan overlay-nya di tengah pertandingan: geser scrubber ke detik papannya pindah, gambar kotak barunya, simpan — papan kita ikut pindah di detik itu.",
+    get: (s) => (s.paste_plan || []).map((entry) => entry.rect),
+    labelOf: (s, i) => fmtTime((s.paste_plan || [])[i]?.t),
   },
   logo: {
     label: "Hapus logo", colour: "#e2725b", multi: true,
@@ -1256,15 +1256,59 @@ function pickerBody(s) {
         ? `${s.source_zoom ? `<button onclick="resetZoom()">Hapus zoom</button>` : ""}`
         : isLayout
         ? `<button class="primary" id="pickok" disabled onclick="addRect()">
-             ${spec.multi ? "Tambah kotak" : "Simpan kotak"}</button>
+             ${spec.plan ? `Simpan posisi papan di ${fmtTime(at)}`
+               : spec.multi ? "Tambah kotak" : "Simpan kotak"}</button>
            ${count ? `<button onclick="clearLayer()">Hapus kotak ${spec.label.toLowerCase()}</button>` : ""}`
         : `<button class="primary" id="quadok" disabled onclick="saveQuad()">Simpan area</button>
            <button onclick="resetQuad()">Ulang dari awal</button>
            <button onclick="clearQuad()">Hapus area</button>`}
       ${isWindow ? "" : `<span id="pickmsg" class="hint">${isZoom ? "Klik lalu geser kotaknya untuk memindah arena." : ""}</span>`}
     </div>
+    ${isLayout && spec.plan ? pastePlanTable(s) : ""}
     ${isLayout && layer === "brand" ? brandUpload(s) : ""}
     ${isThumb ? thumbSteps(s) : ""}`;
+}
+
+// The paste box is a plan over time, not one rectangle: broadcasts move (and resize)
+// their own overlay board mid-game, so ours has to be able to follow. Each row is one
+// position, holding from its second until the next one starts; the first always opens
+// at 0, so its time is shown but cannot be edited.
+function pastePlanTable(s) {
+  const plan = s.paste_plan || [];
+  if (plan.length < 2) {
+    return `<p class="hint" style="margin:10px 0 0">${plan.length
+      ? "Satu posisi — papan tetap di situ sepanjang video. Mau papannya pindah? Geser scrubber ke detik papan siaran pindah, gambar kotak di posisi barunya, lalu simpan."
+      : "Belum ada kotak: papan ditempel di posisi papan overlay yang terdeteksi (kotak putus-putus)."}</p>`;
+  }
+  const rows = plan.map((entry, i) => `<tr>
+    <td style="padding:2px 8px 2px 0;color:var(--muted)">${i + 1}.</td>
+    <td style="padding:2px 8px 2px 0">${i === 0
+      ? `<span class="hint">0:00 (awal)</span>`
+      : `<input value="${fmtTime(entry.t)}" onchange="movePastePosition(${i}, this.value)"
+                title="Detik papan pindah ke posisi ini — boleh 7:35 atau 455"
+                style="width:64px;font-size:12px;padding:2px 5px">`}</td>
+    <td class="hint" style="padding:2px 8px 2px 0;font-family:var(--mono)">${entry.rect.join(", ")}</td>
+    <td style="padding:2px 0">
+      <button onclick="pickAt=${entry.t};draw()" style="padding:2px 8px;font-size:11px">Lihat</button>
+      ${i === 0 ? "" : `<button onclick="removeRect(${i})" style="padding:2px 8px;font-size:11px">Hapus</button>`}
+    </td></tr>`).join("");
+  return `<table style="margin-top:10px;font-size:12px;border-collapse:collapse"><tbody>${rows}</tbody></table>
+    <p class="hint" style="margin:6px 0 0">Tiap posisi dipakai dari detiknya sampai posisi berikutnya mulai.</p>`;
+}
+
+async function savePastePlan(plan) {
+  try {
+    await post("paste-plan", { plan });
+    pick = null;
+    refresh();
+  } catch (e) { alert(e.message); }
+}
+
+async function movePastePosition(index, raw) {
+  const at = parseTime(raw);
+  if (at === null || at < 0) { alert("Waktu tidak terbaca. Pakai 7:35 atau 455."); return; }
+  await savePastePlan((state.paste_plan || []).map((entry, i) =>
+    (i === index ? { ...entry, t: at } : entry)));
 }
 
 // Tabs of the single preview card. Long-video layers first (they share one frame),
@@ -2381,18 +2425,34 @@ function drawExistingRects() {
   const scale = img.clientWidth / state.width;
   const spec = LAYERS[layer];
   const rects = spec.get(state);
+  // the position the render falls back to when nothing is drawn, so it is visible
+  // rather than implied -- dashed and inert, like the other tabs' boxes
+  const auto = spec.plan && !rects.length && state.paste_auto ? state.paste_auto : null;
   host.innerHTML = rects.map((r, i) => `
     <div data-i="${i}" style="position:absolute;left:${r[0] * scale}px;top:${r[1] * scale}px;
          width:${r[2] * scale}px;height:${r[3] * scale}px;border:2px solid ${spec.colour};
          background:${spec.colour}2e">
+      ${spec.labelOf ? `<span style="position:absolute;left:0;top:0;font-size:10px;line-height:1;
+         padding:2px 4px;background:#000a;color:${spec.colour};white-space:nowrap">${
+         spec.labelOf(state, i)}</span>` : ""}
       <button onclick="removeRect(${i})" title="Hapus kotak ini"
          style="position:absolute;top:-11px;right:-11px;width:20px;height:20px;padding:0;
          border-radius:50%;font-size:11px;line-height:1;cursor:pointer">×</button>
-    </div>`).join("");
+    </div>`).join("")
+    + (auto ? `<div style="position:absolute;left:${auto[0] * scale}px;top:${auto[1] * scale}px;
+         width:${auto[2] * scale}px;height:${auto[3] * scale}px;border:2px dashed ${spec.colour};
+         pointer-events:none;opacity:.75">
+      <span style="position:absolute;left:0;top:0;font-size:10px;line-height:1;padding:2px 4px;
+         background:#000a;color:${spec.colour};white-space:nowrap">otomatis</span></div>` : "");
   host.querySelectorAll("[data-i]").forEach((box) => {
     const i = +box.dataset.i;
     wireBoxDrag(box, rects[i], { W: state.width, H: state.height, px: scale,
       onDrop: async (moved) => {
+        if (spec.plan) {
+          await savePastePlan((state.paste_plan || []).map((entry, j) =>
+            (j === i ? { ...entry, rect: moved } : entry)));
+          return;
+        }
         try { await spec.save(rects.map((r, j) => (j === i ? moved : r))); refresh(); }
         catch (e) { alert(e.message); }
       } });
@@ -2402,6 +2462,20 @@ function drawExistingRects() {
 async function addRect() {
   if (!pick) return;
   const spec = LAYERS[layer];
+  if (spec.plan) {
+    // The second showing in the scrubber is when this position takes over. Drawing at
+    // a second that already has a position replaces it rather than stacking a
+    // zero-length one on top; a first position drawn partway in keeps the automatic
+    // box as the opening one, since the board has to be on screen from second 0.
+    const at = Math.max(0, Math.round(pickAt ?? 0));
+    const plan = (state.paste_plan || []).map((entry) => ({ t: entry.t, rect: entry.rect }));
+    if (!plan.length && at > 0 && state.paste_auto) plan.push({ t: 0, rect: state.paste_auto });
+    const same = plan.findIndex((entry) => Math.round(entry.t) === at);
+    if (same >= 0) plan[same] = { t: at, rect: pick };
+    else plan.push({ t: plan.length ? at : 0, rect: pick });
+    await savePastePlan(plan);
+    return;
+  }
   try {
     await spec.save(spec.multi ? [...spec.get(state), pick] : [pick]);
     pick = null; refresh();
@@ -2410,11 +2484,16 @@ async function addRect() {
 
 async function removeRect(index) {
   const spec = LAYERS[layer];
+  if (spec.plan) {
+    await savePastePlan((state.paste_plan || []).filter((_, i) => i !== index));
+    return;
+  }
   await spec.save(spec.get(state).filter((_, i) => i !== index));
   refresh();
 }
 
 async function clearLayer() {
+  if (LAYERS[layer].plan) { await savePastePlan([]); return; }
   await LAYERS[layer].save([]);
   refresh();
 }

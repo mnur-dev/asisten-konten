@@ -128,8 +128,9 @@ redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB pe
 6. **Tata letak** (opsional) — semua penempatan di `full-video.mp4` ditandai manual
    dengan menarik kotak di atas satu frame contoh. Panel "Tata letak" di UI punya
    beberapa layer, semuanya memakai picker yang sama:
-   - `paste_rect` — posisi papan hasil render. Kosong = pakai posisi papan overlay
-     hasil deteksi. Papan menjaga rasio aslinya dan diletakkan di tengah kotak;
+   - `paste_plan` — posisi papan hasil render **beserta waktunya** (lihat "Papan
+     render bisa pindah" di bawah). Kosong = pakai posisi papan overlay hasil
+     deteksi. Papan menjaga rasio aslinya dan diletakkan di tengah kotak;
      jangan diregangkan, sebab dengan eval bar aktif `board.mp4` lebih lebar
      daripada tinggi.
    - `logo_rects` — dihapus dengan `delogo` (interpolasi piksel sekitar, bukan AI)
@@ -169,6 +170,59 @@ redraw membuat elemen baru, dan dulu browser desktop langsung menarik ~2,2 MB pe
 9. **Thumbnail** (opsional) — satu frame video dipilih manual, dibersihkan lewat
    model gambar (logo & papan digital hilang, pemain dimajukan), judulnya digambar
    PIL di atasnya. Satu-satunya bagian berbayar di aplikasi ini — lihat di bawah.
+
+**Papan render bisa pindah di detik tertentu (`paste_plan`).** Siaran memindahkan —
+dan mengubah ukuran — papan overlay-nya di tengah pertandingan; deteksi sudah lama
+tahu itu (`overlay_rects` di `timestamps.json`, satu entri per layout yang terbukti),
+tapi papan kita dulu ditempel di **satu** kotak untuk seluruh video, jadi begitu
+siaran memindahkan papannya, papan kita tertinggal di tempat lama. Contoh nyata di
+proyek Anand–Carlsen (`4dab861c15d3`): tiga layout, `(654,5,536)` →
+`(1323,550,529)` → `(468,104,880)`.
+
+`meta.json` menyimpan `paste_plan`: daftar `{"t": detik siaran, "rect": [x,y,w,h]}`,
+tiap posisi berlaku sampai posisi berikutnya mulai. Entri pertama **selalu dipaksa ke
+detik 0** (`POST /paste-plan` dan `paste_plan_of()` sama-sama menegakkannya) — kalau
+tidak, bagian sebelum posisi pertama masih menampilkan papan overlay siaran tanpa
+ditimpa apa pun. Proyek lama yang membawa `paste_rect` tunggal dibaca sebagai rencana
+satu entri; daftar kosong tetap jatuh ke kotak overlay hasil deteksi (dikirim ke UI
+sebagai `paste_auto` dan digambar putus-putus berlabel "otomatis", supaya posisi
+otomatis itu kelihatan, bukan cuma tersirat). Begitu rencana disimpan sekali,
+`paste_rect` ditulis `null` supaya tidak ada dua sumber kebenaran.
+
+Di filter graph (`composite_stages`) tiap posisi jadi **overlay-nya sendiri**, dinyalakan
+`enable='gte(t,mulai)*lt(t,berikutnya)'`. Papannya di-`split` satu cabang per posisi
+dan di-`scale` masing-masing, sebab siaran yang memindahkan papan biasanya sekalian
+mengubah ukurannya dan `scale` tidak menerima ekspresi waktu — jadi tidak bisa cukup
+satu overlay dengan ekspresi `x`/`y`. Batasnya setengah terbuka (`gte`/`lt`), supaya
+tidak ada satu frame pun yang diklaim dua posisi sekaligus.
+
+**Waktu di rencana itu jam siaran, sedangkan jam filter graph mulai dari `-ss`.**
+`overlay_composite()` menghitung `snapped` (pembulatan `-ss` ke grid frame, lihat
+`lead_in` di atas) **sebelum** menyusun graf, lalu `shift_segments()` membuang posisi
+yang sudah terlewat potongan dan membuka dengan posisi yang berlaku di detik itu.
+Kalau tidak, memperpanjang "Mulai −" akan menggeser semua waktu pindah. Terverifikasi
+di video sintetis (pindah di detik 8): `start=0` → pindah di 8,0; `start=5` → pindah di
+3,0 (detik 7,4 keluaran sudah posisi kedua); `start=9` → langsung posisi kedua sejak
+frame pertama. `composite_frame()` (pratinjau still) memakai posisi yang berlaku di
+detik itu — tidak ada timeline di satu frame — dan ikut terverifikasi di batas 7,9/8,0.
+
+Di UI tab "Papan render" jadi multi-kotak: geser scrubber ke detik papan siaran pindah,
+gambar kotak barunya, tombolnya berbunyi "Simpan posisi papan di 6:40". Menggambar di
+detik yang sudah punya posisi **mengganti** posisi itu, bukan menumpuk posisi
+berdurasi nol. Tabel di bawah picker menampilkan tiap posisi: waktunya bisa diedit
+(`parseTime` menerima `7:35` atau `455`), ada tombol "Lihat" untuk melompat ke detik
+itu, dan posisi pertama tidak bisa dihapus/diubah waktunya. Kotaknya tetap bisa
+digeser langsung seperti layer lain (`wireBoxDrag`), cuma penyimpanannya lewat
+`savePastePlan()` yang menjaga waktu tiap posisi — jangan kembalikan ke pemetaan
+per-indeks model layer lain, sebab menghapus posisi di tengah akan menggeser waktu
+posisi sesudahnya.
+
+**Yang belum: mengisi waktu pindah itu otomatis.** Deteksi tahu *posisi* mana saja yang
+dipakai siaran, tapi `detect()` menggabungkan semua layout dengan mengambil cost
+terkecil per `(frame, ply)` — tahu layout mana yang menang di tiap frame, lalu
+membuang informasinya. Mencatat argmin per frame (lalu dihaluskan jadi segmen) sudah
+cukup untuk mengisi `paste_plan` sendiri; itu tahap berikutnya, dan tulisannya ke
+struktur yang sama dengan yang diisi manual sekarang.
 
 **Balik papan (`flip_board`).** Tombol "⇅ balik papan" di panel Tampilan menaruh
 hitam di bawah. Yang ikut terbalik bukan cuma petaknya: koordinat, papan jam (sisi

@@ -826,14 +826,63 @@ def zoom_crop_rect(size, zoom):
     return crop_w, crop_h, crop_x, crop_y
 
 
+def paste_segments(rect):
+    """Normalise the board's paste box into [(start_second, (x, y, w, h)), ...].
+
+    Broadcasts move their overlay board mid-game -- and resize it; one measured video
+    goes (654, 5, 536) -> (1323, 550, 529) -> (468, 104, 880) -- so where OUR board is
+    pasted has to be able to move with it. Accepts a plain (x, y, w, h) box (one
+    position for the whole video, what every project used before this existed), a list
+    of {"t", "rect"} dicts or a list of (t, rect) pairs. Sorted by time, and the first
+    segment always starts at 0: a board that only appears partway through would read
+    as the overlay never having been replaced at all.
+    """
+    if not rect:
+        return []
+    items = list(rect)
+    if len(items) == 4 and all(isinstance(value, (int, float)) for value in items):
+        return [(0.0, tuple(items))]
+    segments = []
+    for item in items:
+        if isinstance(item, dict):
+            segments.append((float(item.get("t") or 0.0), tuple(item["rect"])))
+        else:
+            at, box = item
+            segments.append((float(at), tuple(box)))
+    segments.sort(key=lambda segment: segment[0])
+    segments[0] = (0.0, segments[0][1])
+    return segments
+
+
+def rect_at(segments, t):
+    """The paste box in force at second `t` -- the last one that has started."""
+    active = segments[0][1]
+    for start, box in segments:
+        if start > t:
+            break
+        active = box
+    return active
+
+
+def shift_segments(segments, start):
+    """The same plan on a timeline that begins at broadcast second `start`, as the
+    filter graph's own clock does once both inputs are seeked (see overlay_composite).
+    Positions the cut has skipped past are dropped; the one covering `start` opens."""
+    kept = [(at - start, box) for at, box in segments if at > start]
+    return [(0.0, rect_at(segments, start)), *kept]
+
+
 def composite_stages(rect, logo_rects=None, blur_rects=None, furniture=None, zoom=None,
                      size=None, freeze=None):
     """The filter graph that turns the broadcast ([0:v]) plus a board ([1:v]) and an
     optional furniture PNG ([2:v]) into the finished frame, ending at [v]. Shared by
     overlay_composite (the render) and composite_frame (the step-5 preview), so a
     preview can never drift from what the render will produce. `freeze` holds the
-    board's last frame for that many seconds (tpad) -- only meaningful for video."""
-    x, y, width, height = rect
+    board's last frame for that many seconds (tpad) -- only meaningful for video.
+
+    `rect` is one paste box or a whole plan (see paste_segments) whose times are on
+    THIS graph's clock, not the broadcast's -- the caller shifts them if it seeks."""
+    segments = paste_segments(rect)
     zoom_active = bool(zoom and zoom.get("percent", 100) > 100)
     label = "0:v"
     stages = []
@@ -856,11 +905,33 @@ def composite_stages(rect, logo_rects=None, blur_rects=None, furniture=None, zoo
         label = f"blur{index}"
     # board.mp4 starts at broadcast second 0 and never outlasts `end` by design, so
     # freezing it for `end` seconds is always enough; -t cuts the excess.
-    tpad = f",tpad=stop_mode=clone:stop_duration={freeze:g}" if freeze else ""
-    stages.append(f"[1:v]scale={width}:{height}:force_original_aspect_ratio=decrease{tpad}[b]")
+    tpad = f"tpad=stop_mode=clone:stop_duration={freeze:g}," if freeze else ""
     board_out = "board" if furniture else "v"
-    stages.append(f"[{label}][b]overlay="
-                  f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
+    if len(segments) == 1:
+        x, y, width, height = segments[0][1]
+        stages.append(f"[1:v]{tpad}scale={width}:{height}:force_original_aspect_ratio=decrease[b]")
+        stages.append(f"[{label}][b]overlay="
+                      f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
+        return stages
+    # One overlay per position, each switched on for its own stretch of the timeline.
+    # The board has to be scaled separately for every box (a broadcast that moves its
+    # overlay usually resizes it too, and `scale` takes no time expressions), so the
+    # board stream is split into one branch per segment rather than overlaid once with
+    # an expression for x/y. Bounds are half-open -- gte(start) and lt(next) -- so no
+    # frame is ever claimed by two positions at the same time.
+    count = len(segments)
+    stages.append(f"[1:v]{tpad}split={count}" + "".join(f"[p{i}]" for i in range(count)))
+    for index, (_, (_, _, width, height)) in enumerate(segments):
+        stages.append(f"[p{index}]scale={width}:{height}:force_original_aspect_ratio=decrease[b{index}]")
+    for index, (start, (x, y, width, height)) in enumerate(segments):
+        window = [f"gte(t,{start:.3f})"] if index else []
+        if index + 1 < count:
+            window.append(f"lt(t,{segments[index + 1][0]:.3f})")
+        out = f"seg{index}" if index + 1 < count else board_out
+        stages.append(f"[{label}][b{index}]overlay="
+                      f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1"
+                      f":enable='{'*'.join(window)}'[{out}]")
+        label = out
     if furniture:
         stages.append(f"[{board_out}][2:v]overlay=0:0[v]")
     return stages
@@ -870,7 +941,12 @@ def composite_frame(source, board_png, t, rect, logo_rects=None, blur_rects=None
                     furniture=None, zoom=None, size=None, width=960) -> bytes:
     """One finished frame at broadcast second `t` as JPEG bytes: the same graph as the
     render, with a still board image instead of board.mp4. Lets the render step show
-    what the long video will look like before anything has been rendered."""
+    what the long video will look like before anything has been rendered.
+
+    A still has no timeline, so a moving board collapses to the one box in force at
+    `t` -- which is exactly what the frame at that second looks like."""
+    if segments := paste_segments(rect):
+        rect = rect_at(segments, max(0.0, t))
     stages = composite_stages(rect, logo_rects=logo_rects, blur_rects=blur_rects,
                               furniture=furniture, zoom=zoom, size=size)
     stages[-1] = stages[-1].removesuffix("[v]") + f",scale={width}:-2[v]"   # preview size
@@ -894,7 +970,9 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
     `rect` is (x, y, w, h) in source-video pixels: either the detected overlay square
     or a box the user drew. The board keeps its own aspect ratio and is centred in the
     box -- with the eval bar on, board.mp4 is wider than it is tall, so stretching it
-    to a square box would visibly squash the pieces.
+    to a square box would visibly squash the pieces. It can also be a plan of boxes
+    with broadcast seconds attached (see paste_segments), for a broadcast that moves
+    its own overlay mid-game; the plan is shifted onto the trimmed timeline here.
     `logo_rects` is a list of (x, y, w, h) boxes to blot out via ffmpeg's `delogo`
     (interpolates each box from its surrounding pixels — no AI); `blur_rects` the same
     but blurred, for areas that keep changing and so smear under interpolation.
@@ -922,7 +1000,12 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
     which reuses that file and counts from its start -- is unaffected.
     """
     encoder = encoder or pick_encoder()
-    stages = composite_stages(rect, logo_rects=logo_rects, blur_rects=blur_rects,
+    # Same floor-and-nudge as the seek below, worked out first: the filter graph's
+    # clock restarts at the frame the seek lands on, so the paste plan's broadcast
+    # seconds have to be measured from there.
+    snapped = max(0.0, math.floor(start * BOARD_FPS) / BOARD_FPS - 0.001)
+    stages = composite_stages(shift_segments(paste_segments(rect), snapped),
+                              logo_rects=logo_rects, blur_rects=blur_rects,
                               furniture=furniture, zoom=zoom, size=size, freeze=end)
 
     def build_command(enc):
@@ -936,7 +1019,6 @@ def overlay_composite(source, board_video, output, rect, logo_rects=None, encode
         # at 0, so the move clicks run a frame ahead of the picture. Measured: -ss
         # 5.233333 gives a 0.033s video start_time, 5.233000 gives 0.000. Flooring
         # and the nudge only ever keep a few extra milliseconds, never clip the move.
-        snapped = max(0.0, math.floor(start * BOARD_FPS) / BOARD_FPS - 0.001)
         seek = ["-ss", f"{snapped:.4f}"] if snapped > 0 else []
         inputs = [*seek, "-i", str(source), *seek, "-i", str(board_video)]
         if furniture:

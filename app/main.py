@@ -389,6 +389,14 @@ def status(project_id: str):
     meta.setdefault("logo_rects", [])
     meta.setdefault("blur_rects", [])
     meta.setdefault("paste_rect", None)
+    # The plan the user has drawn (one entry where the box used to be a single fixed
+    # rect, more when the broadcast's overlay moves), and separately the box the render
+    # falls back to when they have drawn nothing -- shown as a ghost so the automatic
+    # position is visible, and used as the opening position when they add a second one.
+    meta["paste_plan"] = paste_plan_of(meta)
+    meta["paste_auto"] = next(iter(paste_plan_of(
+        {"width": meta.get("width"), "height": meta.get("height")},
+        meta.get("overlay_rect"))), {}).get("rect")
     meta.setdefault("brand_file", None)
     meta.setdefault("brand_rect", None)
     meta.setdefault("brand_preset", None)
@@ -592,6 +600,32 @@ def clamp_rects(rects, video_w, video_h):
     return clamped
 
 
+def paste_plan_of(meta: dict, overlay_rect=None, size=None):
+    """Where our rendered board gets pasted, as a plan: [{"t", "rect"}, ...] in
+    broadcast seconds, first entry always at 0. Broadcasts move -- and resize -- their
+    own overlay mid-game, so the paste box has to be able to follow it; see
+    core.render.paste_segments for what the filter graph does with this.
+
+    `paste_plan` in meta.json is the live key. Projects made before it exists carry a
+    single `paste_rect`, read here as a one-entry plan, and an empty plan still falls
+    back to the detected overlay square padded to a square, exactly as it always has."""
+    size = size or (meta.get("width"), meta.get("height"))
+    stored = meta.get("paste_plan")
+    if stored is None and meta.get("paste_rect"):
+        stored = [{"t": 0, "rect": meta["paste_rect"]}]
+    plan = sorted(({"t": float(entry.get("t") or 0), "rect": list(entry["rect"])}
+                   for entry in (stored or []) if entry.get("rect")),
+                  key=lambda entry: entry["t"])
+    if plan:
+        plan[0]["t"] = 0.0
+        boxes = clamp_rects([entry["rect"] for entry in plan], *size)
+        return [{"t": entry["t"], "rect": box} for entry, box in zip(plan, boxes)]
+    if overlay_rect:
+        x, y, side = pad_square(tuple(overlay_rect), *size)
+        return [{"t": 0.0, "rect": [x, y, side, side]}]
+    return []
+
+
 def clean_rects(rects, meta, label="Box", minimum=10):
     """Validate, round and clamp a list of [x, y, w, h] against the frame."""
     cleaned = []
@@ -627,16 +661,36 @@ def set_blur_rects(project_id: str, rects: list = Body(..., embed=True)):
     return {"blur_rects": cleaned}
 
 
-@app.post("/api/projects/{project_id}/paste-rect")
-def set_paste_rect(project_id: str, rect: list | None = Body(None, embed=True)):
-    """Where OUR rendered board gets pasted onto the broadcast, [x, y, w, h]. Null
-    falls back to the detected overlay square. Distinct from `board_quad`, which is the
-    wooden board being watched for timing -- this one is purely about output framing."""
+@app.post("/api/projects/{project_id}/paste-plan")
+def set_paste_plan(project_id: str, plan: list = Body(..., embed=True)):
+    """Where OUR rendered board gets pasted onto the broadcast, over time: a list of
+    {"t": broadcast second, "rect": [x, y, w, h]}, each position holding until the next
+    one starts. An empty list falls back to the detected overlay square. One entry is
+    the old fixed box; more than one is for a broadcast that moves its own overlay
+    mid-game. Distinct from `board_quad`, which is the wooden board being watched for
+    timing -- this one is purely about output framing.
+
+    The first entry is forced to second 0 whatever time it was sent with: the board has
+    to be on screen from the start, or the stretch before it would still be showing the
+    broadcast's own overlay with nothing pasted over it."""
     path = folder(project_id)
-    if rect is not None:
-        rect = clean_rects([rect], read_meta(path), "Board box", minimum=40)[0]
-    update(path, paste_rect=rect)
-    return {"paste_rect": rect}
+    meta = read_meta(path)
+    entries = []
+    for entry in plan:
+        if not isinstance(entry, dict) or "rect" not in entry:
+            raise HTTPException(400, 'Each entry must be {"t", "rect"}')
+        try:
+            at = max(0.0, float(entry.get("t") or 0))
+        except (TypeError, ValueError):
+            raise HTTPException(400, "Each entry's t must be a number of seconds")
+        entries.append({"t": at, "rect": clean_rects([entry["rect"]], meta, "Board box", minimum=40)[0]})
+    entries.sort(key=lambda entry: entry["t"])
+    if entries:
+        entries[0]["t"] = 0.0
+    # paste_rect is what projects made before the plan existed carry; clearing it keeps
+    # paste_plan_of from reading a stale box once the plan has been saved even once
+    update(path, paste_plan=entries, paste_rect=None)
+    return {"paste_plan": entries}
 
 
 @app.post("/api/projects/{project_id}/name-rects")
@@ -948,11 +1002,7 @@ def long_layout(path: Path, meta: dict, data: dict, furniture_path: Path | None 
     size = (meta.get("width"), meta.get("height"))
     logo_rects = clamp_rects(meta.get("logo_rects"), *size)
     blur_rects = clamp_rects(meta.get("blur_rects"), *size)
-    if paste := meta.get("paste_rect"):
-        paste_rect = tuple(paste)
-    else:
-        x, y, side = pad_square(tuple(data["overlay_rect"]), *size)
-        paste_rect = (x, y, side, side)
+    paste_rect = paste_plan_of(meta, data.get("overlay_rect"), size)
     furniture = None
     plates = meta.get("name_rects") or {}
     nameplates = [(meta.get(side), plates.get(side))
