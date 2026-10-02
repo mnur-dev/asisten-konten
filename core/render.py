@@ -912,26 +912,28 @@ def composite_stages(rect, logo_rects=None, blur_rects=None, furniture=None, zoo
         stages.append(f"[1:v]{tpad}scale={width}:{height}:force_original_aspect_ratio=decrease[b]")
         stages.append(f"[{label}][b]overlay="
                       f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1[{board_out}]")
-        return stages
-    # One overlay per position, each switched on for its own stretch of the timeline.
-    # The board has to be scaled separately for every box (a broadcast that moves its
-    # overlay usually resizes it too, and `scale` takes no time expressions), so the
-    # board stream is split into one branch per segment rather than overlaid once with
-    # an expression for x/y. Bounds are half-open -- gte(start) and lt(next) -- so no
-    # frame is ever claimed by two positions at the same time.
-    count = len(segments)
-    stages.append(f"[1:v]{tpad}split={count}" + "".join(f"[p{i}]" for i in range(count)))
-    for index, (_, (_, _, width, height)) in enumerate(segments):
-        stages.append(f"[p{index}]scale={width}:{height}:force_original_aspect_ratio=decrease[b{index}]")
-    for index, (start, (x, y, width, height)) in enumerate(segments):
-        window = [f"gte(t,{start:.3f})"] if index else []
-        if index + 1 < count:
-            window.append(f"lt(t,{segments[index + 1][0]:.3f})")
-        out = f"seg{index}" if index + 1 < count else board_out
-        stages.append(f"[{label}][b{index}]overlay="
-                      f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1"
-                      f":enable='{'*'.join(window)}'[{out}]")
-        label = out
+        # no early return: the furniture overlay below still has to consume [board],
+        # or ffmpeg rejects the graph ("overlay has an unconnected output")
+    else:
+        # One overlay per position, each switched on for its own stretch of the timeline.
+        # The board has to be scaled separately for every box (a broadcast that moves its
+        # overlay usually resizes it too, and `scale` takes no time expressions), so the
+        # board stream is split into one branch per segment rather than overlaid once with
+        # an expression for x/y. Bounds are half-open -- gte(start) and lt(next) -- so no
+        # frame is ever claimed by two positions at the same time.
+        count = len(segments)
+        stages.append(f"[1:v]{tpad}split={count}" + "".join(f"[p{i}]" for i in range(count)))
+        for index, (_, (_, _, width, height)) in enumerate(segments):
+            stages.append(f"[p{index}]scale={width}:{height}:force_original_aspect_ratio=decrease[b{index}]")
+        for index, (start, (x, y, width, height)) in enumerate(segments):
+            window = [f"gte(t,{start:.3f})"] if index else []
+            if index + 1 < count:
+                window.append(f"lt(t,{segments[index + 1][0]:.3f})")
+            out = f"seg{index}" if index + 1 < count else board_out
+            stages.append(f"[{label}][b{index}]overlay="
+                          f"{x}+({width}-w)/2:{y}+({height}-h)/2:shortest=1"
+                          f":enable='{'*'.join(window)}'[{out}]")
+            label = out
     if furniture:
         stages.append(f"[{board_out}][2:v]overlay=0:0[v]")
     return stages
