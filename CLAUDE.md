@@ -1020,6 +1020,16 @@ Evaluasi 109 ply memakan ~23 detik pada `movetime=0.2` dengan MultiPV 2 dan 3 th
   yang ditempati path. Cuma ply pertama yang biasanya kena — ply lain selalu
   "dijaga" oleh bukti kuat ply sebelumnya.
 
+- **yt-dlp di PC diam-diam turun ke 360p** (5 Okt 2026): klien bawaan cuma diberi format
+  18, dan selector `.../best` menerimanya tanpa error — proyek jadi 640x360 dan rect deteksi
+  ikut skala itu. `download()` sekarang menambah `player_client=default,web_safari` (web_safari
+  masih punya HLS 1080p). Kalau IP PC kena "Sign in to confirm you're not a bot" setelah
+  banyak unduhan beruntun, unduh lewat VPS (cookies.txt) lalu salin `source.mp4` ke proyek.
+- **Ply tanpa timestamp menggeser semua ply sesudahnya.** `durations_from_waypoints()`
+  membuang entri `None` lalu menomori ulang, jadi kalau ply 1 tidak terdeteksi, waktu ply 2
+  dipakai ply 1 dan seterusnya (terjadi di Leko–Erigaisi, 5 Okt 2026). Sebelum render, cek
+  `timestamp is None` dan isi lewat `POST /waypoints`.
+
 ## Yang belum selesai
 
 - **Hapus sistem VPS lama** setelah pengguna puas dengan yang baru.

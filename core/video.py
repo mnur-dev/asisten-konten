@@ -56,7 +56,10 @@ def download(url, output, on_progress=None) -> Path:
     output = Path(output)
     for leftover in output.parent.glob(output.stem + ".*"):
         leftover.unlink(missing_ok=True)
+    # Since Oct 2026 the default clients only get format 18 (360p) on this machine and
+    # yt-dlp falls back to it silently; web_safari still lists the 1080p HLS stream.
     common = ["-f", "bv*[height<=1080]+ba/b[height<=1080]/best",
+              "--extractor-args", "youtube:player_client=default,web_safari",
               "--merge-output-format", "mp4", "--no-playlist", "--newline", "--progress",
               "-o", str(output), url]
     variants = [
