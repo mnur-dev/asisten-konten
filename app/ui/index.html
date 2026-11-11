@@ -3008,18 +3008,6 @@ function setThumbModel(id) {
   draw();
 }
 
-async function saveOpenRouterKey() {
-  const key = $("thumbKey").value.trim();
-  if (!key) return;
-  try {
-    thumbHasKey = (await api("api/openrouter-key", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ key }),
-    })).has_key;
-    draw();
-  } catch (e) { alert(e.message); }
-}
-
 // The one paid step. Saves the prompt first for the same reason the render
 // buttons save their settings first: what runs is what the box shows.
 async function runThumbGenerate() {
@@ -3027,7 +3015,7 @@ async function runThumbGenerate() {
   const quality = allowed ? thumbQuality : null;
   if (!confirm(`Kirim frame ini ke ${model}${quality ? ` (kualitas ${quality})` : ""}?\n\n`
       + `Perkiraan biaya: ${thumbCostHint()}\n`
-      + `Biaya sebenarnya dilaporkan OpenRouter dan tampil di panel setelah selesai.`)) return;
+      + `Pemakaian mengikuti akun 9router; biaya mungkin tidak dilaporkan.`)) return;
   try {
     if (thumbPromptDirty) await post("thumb-prompt", { prompt: thumbPrompt });
     await post("thumb-generate", { quality, model });
@@ -3104,12 +3092,7 @@ function thumbSteps(s) {
 
         <p class="hint" style="margin:14px 0 6px"><b>3. Buat gambarnya.</b> Ini satu-satunya
           langkah berbayar.</p>
-        ${thumbHasKey === false ? `<div class="row" style="margin-bottom:8px">
-          <input id="thumbKey" type="password" placeholder="sk-or-v1-..." style="flex:1;min-width:170px">
-          <button class="primary" onclick="saveOpenRouterKey()">Simpan key</button>
-        </div>
-        <p class="hint" style="margin:0 0 8px">Key OpenRouter. Disimpan di <code>.env</code>
-          (sudah di-gitignore), bukan di dalam proyek.</p>` : ""}
+        ${thumbHasKey === false ? `<p class="hint">Kunci 9router belum tersedia pada server.</p>` : ""}
         <div class="row" style="margin-bottom:7px">
           <span class="hint">model</span>
           <select id="thumbModel" style="padding:7px;flex:1;min-width:210px;max-width:330px"
@@ -3120,7 +3103,7 @@ function thumbSteps(s) {
               } — ${m.id}</option>`).join("")
               : `<option>(daftar model belum terambil)</option>`}
           </select>
-          <button onclick="refreshThumbModels()" title="Ambil ulang daftar & harga dari OpenRouter">
+          <button onclick="refreshThumbModels()" title="Muat ulang daftar model 9router">
             Segarkan</button>
         </div>
         <div class="row">
@@ -3131,14 +3114,14 @@ function thumbSteps(s) {
           </select>` : `<span class="hint" title="Model ini tidak punya parameter kualitas">
             (tanpa pilihan kualitas)</span>`}
           <button class="primary" ${canGenerate ? "" : "disabled"} onclick="runThumbGenerate()"
-                  title="${s.has_thumb_source ? (thumbHasKey ? "Kirim ke OpenRouter"
+                  title="${s.has_thumb_source ? (thumbHasKey ? "Kirim ke 9router"
                     : "Isi API key dulu") : "Pilih frame dulu"}">Buat dengan AI</button>
           <span class="hint">${thumbCostHint()}</span>
         </div>
         ${spent.calls ? `<p class="hint" style="margin:8px 0 0">Sudah terpakai:
           <b>${spent.calls}</b> panggilan · <b>$${spent.usd.toFixed(4)}
           (Rp ${Math.round(spent.usd * THUMB_RATE).toLocaleString("id-ID")})</b> — biaya nyata
-          yang dilaporkan OpenRouter, bukan perkiraan${spent.unknown
+          yang dilaporkan penyedia, bukan perkiraan${spent.unknown
             ? `; ${spent.unknown} panggilan tidak melaporkan biaya` : ""}.</p>` : ""}
       </div>
 

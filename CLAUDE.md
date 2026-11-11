@@ -1,5 +1,9 @@
 # Asisten Konten — catatan proyek
 
+## Pembaruan 11 Nov 2026: thumbnail 9router
+
+> Menggantikan catatan OpenRouter di bawah: thumbnail memakai `cx/gpt-6.1-terra` via `https://ep.sukaweb.my.id/v1/images/generations`, dengan frame pada field `image` (data URL), bukan `input_references`. Kunci dibaca dari `NINEROUTER_KEY_FILE`, atau `~/pusat-bisnis/pc/9router-key.txt` di VPS dan `D:/Website/pusat-bisnis/pc/9router-key.txt` di Windows. Biaya tidak selalu dilaporkan; percobaan lama tetap tersimpan. Uji `python -m unittest tests.test_thumbnail_9router`.
+
 Aplikasi lokal untuk membuat video papan catur yang **timing-nya mengikuti video
 siaran**, bukan jam di PGN. Tujuan akhirnya menggantikan pekerjaan manual:
 menonton pertandingan penuh (10–30 menit) sambil menekan tombol "next" di papan

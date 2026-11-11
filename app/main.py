@@ -1581,8 +1581,7 @@ def output_file(project_id: str, name: str):
 # ------------------------------------------------------------------ thumbnail
 
 def thumb_model_record(model: str) -> dict | None:
-    """The cached OpenRouter record for one model, or None if it is not in the
-    list. Used to decide what parameters the model will actually accept."""
+    """Return the configured thumbnail model and its supported options."""
     try:
         return next((m for m in thumbnail.list_models() if m["id"] == model), None)
     except Exception as error:      # offline: let the call itself be the judge
@@ -1634,25 +1633,9 @@ def openrouter_key_status():
     return {"has_key": bool(thumbnail.find_api_key())}
 
 
-@app.post("/api/openrouter-key")
-def set_openrouter_key(key: str = Body(..., embed=True)):
-    """Save the key to the gitignored .env at the repo root. Plain text on a machine
-    only this user has -- the same place they would have put it by hand -- and read
-    fresh on every call, so it works without restarting the server."""
-    if not (key := (key or "").strip()):
-        raise HTTPException(400, "Key kosong")
-    thumbnail.save_api_key(key)
-    return {"has_key": bool(thumbnail.find_api_key())}
-
-
 @app.get("/api/openrouter/models")
 def openrouter_models(refresh: bool = False):
-    """Every image model that can take an input image, with a per-edit price.
-
-    Served from a disk cache (see thumbnail.list_models): pricing lives on a
-    per-model record, so building the list is one request per model. `refresh`
-    forces a refetch -- new models then show up without a code change, which is
-    the whole reason this goes through OpenRouter."""
+    """Return the configured 9router thumbnail model."""
     try:
         return {"models": thumbnail.list_models(refresh=refresh),
                 "default": thumbnail.DEFAULT_MODEL}
@@ -1786,8 +1769,10 @@ def start_thumbnail(project_id: str, quality: str | None = Body(thumbnail.DEFAUL
     if allowed and quality not in allowed:
         raise HTTPException(400, f"quality untuk {model} harus " + ", ".join(allowed))
     quality = quality if allowed else None
+    if model != thumbnail.DEFAULT_MODEL:
+        raise HTTPException(400, "Pilih GPT 6.1 Terra (9router)")
     if not (key := thumbnail.find_api_key()):
-        raise HTTPException(400, "OPENROUTER_API_KEY belum diisi")
+        raise HTTPException(400, "Kunci 9router belum tersedia pada server")
     prompt = thumb_prompt_of(meta)
     update(path, status="thumbnail", error=None, thumb_quality=quality, thumb_model=model)
 
